@@ -15,18 +15,324 @@
         "hostedZoneId": null,
         "customDomain": null,
         "certificateArn": null,
+        "waf": {
+          "defaultAction": "Allow",
+          "wafRules": [
+            {
+              "name": "BlockSpecificIPs",
+              "priority": 0,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "ipSetReferenceStatement": {
+                  "arn": "arn:aws:wafv2:us-east-1:123456789012:ipset/BlockIPsSet/abcd1234-5678-90ef-ghij-klmnopqrstuv"
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "BlockSpecificIPs"
+              }
+            },
+            {
+              "name": "BlockCountries",
+              "priority": 1,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "geoMatchStatement": {
+                  "countryCodes": ["CN", "RU", "BR"]
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "BlockCountries"
+              }
+            },
+            {
+              "name": "BlockHeaderXBadBot",
+              "priority": 2,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "byteMatchStatement": {
+                  "fieldToMatch": {
+                    "headers": {
+                      "name": "X-Bad-Bot",
+                      "matchScope": "EXACT"
+                    }
+                  },
+                  "positionalConstraint": "EXACTLY",
+                  "searchString": "true",
+                  "textTransformations": [
+                    {
+                      "priority": 0,
+                      "type": "NONE"
+                    }
+                  ]
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "BlockHeaderXBadBot"
+              }
+            },
+            {
+              "name": "RateLimit100Reqs5Min",
+              "priority": 3,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "rateBasedStatement": {
+                  "limit": 100,
+                  "aggregateKeyType": "IP",
+                  "scopeDownStatement": {
+                    "byteMatchStatement": {
+                      "fieldToMatch": {
+                        "uriPath": {}
+                      },
+                      "positionalConstraint": "STARTS_WITH",
+                      "searchString": "/api/",
+                      "textTransformations": [
+                        {
+                          "priority": 0,
+                          "type": "NONE"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "RateLimit100Reqs5Min"
+              }
+            }
+          ]
+        },
         "env": {}
       },
       "staging": {
         "hostedZoneId": null,
         "customDomain": null,
         "certificateArn": null,
+        "waf": {
+          "defaultAction": "Allow",
+          "wafRules": [
+            {
+              "name": "BlockSpecificIPs",
+              "priority": 0,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "ipSetReferenceStatement": {
+                  "arn": "arn:aws:wafv2:us-east-1:123456789012:ipset/BlockIPsSet/abcd1234-5678-90ef-ghij-klmnopqrstuv"
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "BlockSpecificIPs"
+              }
+            },
+            {
+              "name": "BlockCountries",
+              "priority": 1,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "geoMatchStatement": {
+                  "countryCodes": ["CN", "RU", "BR"]
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "BlockCountries"
+              }
+            },
+            {
+              "name": "BlockHeaderXBadBot",
+              "priority": 2,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "byteMatchStatement": {
+                  "fieldToMatch": {
+                    "headers": {
+                      "name": "X-Bad-Bot",
+                      "matchScope": "EXACT"
+                    }
+                  },
+                  "positionalConstraint": "EXACTLY",
+                  "searchString": "true",
+                  "textTransformations": [
+                    {
+                      "priority": 0,
+                      "type": "NONE"
+                    }
+                  ]
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "BlockHeaderXBadBot"
+              }
+            },
+            {
+              "name": "RateLimit100Reqs5Min",
+              "priority": 3,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "rateBasedStatement": {
+                  "limit": 100,
+                  "aggregateKeyType": "IP",
+                  "scopeDownStatement": {
+                    "byteMatchStatement": {
+                      "fieldToMatch": {
+                        "uriPath": {}
+                      },
+                      "positionalConstraint": "STARTS_WITH",
+                      "searchString": "/api/",
+                      "textTransformations": [
+                        {
+                          "priority": 0,
+                          "type": "NONE"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "RateLimit100Reqs5Min"
+              }
+            }
+          ]
+        },
         "env": {}
       },
       "prod": {
         "hostedZoneId": null,
         "customDomain": null,
         "certificateArn": null,
+        "waf": {
+          "defaultAction": "Allow",
+          "wafRules": [
+            {
+              "name": "BlockSpecificIPs",
+              "priority": 0,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "ipSetReferenceStatement": {
+                  "arn": "arn:aws:wafv2:us-east-1:123456789012:ipset/BlockIPsSet/abcd1234-5678-90ef-ghij-klmnopqrstuv"
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "BlockSpecificIPs"
+              }
+            },
+            {
+              "name": "BlockCountries",
+              "priority": 1,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "geoMatchStatement": {
+                  "countryCodes": ["CN", "RU", "BR"]
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "BlockCountries"
+              }
+            },
+            {
+              "name": "BlockHeaderXBadBot",
+              "priority": 2,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "byteMatchStatement": {
+                  "fieldToMatch": {
+                    "headers": {
+                      "name": "X-Bad-Bot",
+                      "matchScope": "EXACT"
+                    }
+                  },
+                  "positionalConstraint": "EXACTLY",
+                  "searchString": "true",
+                  "textTransformations": [
+                    {
+                      "priority": 0,
+                      "type": "NONE"
+                    }
+                  ]
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "BlockHeaderXBadBot"
+              }
+            },
+            {
+              "name": "RateLimit100Reqs5Min",
+              "priority": 3,
+              "action": {
+                "block": {}
+              },
+              "statement": {
+                "rateBasedStatement": {
+                  "limit": 100,
+                  "aggregateKeyType": "IP",
+                  "scopeDownStatement": {
+                    "byteMatchStatement": {
+                      "fieldToMatch": {
+                        "uriPath": {}
+                      },
+                      "positionalConstraint": "STARTS_WITH",
+                      "searchString": "/api/",
+                      "textTransformations": [
+                        {
+                          "priority": 0,
+                          "type": "NONE"
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "visibilityConfig": {
+                "sampledRequestsEnabled": true,
+                "cloudWatchMetricsEnabled": true,
+                "metricName": "RateLimit100Reqs5Min"
+              }
+            }
+          ]
+        },
         "env": {}
       }
     }

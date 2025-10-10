@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
- This "{{.ProjectName}}" SAM stack is a Gothic App. You can extend the infrastructure as code by adding additional resources directly to the template file.
+  This "{{.ProjectName}}" SAM stack is a Gothic App. You can extend the infrastructure as code by adding additional resources directly to the template file.
 
 Globals:
 # Auto-generated code during deployment. Do not modify this section directly.
@@ -74,6 +74,159 @@ Resources:
         - !FindInMap [StagesMap, !Ref Stage, customDomain]
 {{- end }}
 
+{{- if .Waf }}
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${AWS::StackName}-web-acl"
+      Scope: CLOUDFRONT
+      {{- if eq .Waf.DefaultAction "Allow" }}
+      DefaultAction:
+        Allow: {}
+      {{- else if eq .Waf.DefaultAction "Block" }}
+      DefaultAction:
+        Block: {}
+      {{- else }}
+      DefaultAction:
+        Allow: {} # fallback seguro
+      {{- end }}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${AWS::StackName}-web-acl-metric"
+      Rules:
+        {{- range .Waf.WafRules }}
+        - Name: "{{ .Name }}"
+          Priority: {{ .Priority }}
+          Action:
+            Block: {}
+          Statement:
+            {{- if .Statement.IPSetReferenceStatement }}
+            IPSetReferenceStatement:
+              Arn: {{ .Statement.IPSetReferenceStatement.Arn }}
+            {{- end }}
+            {{- if .Statement.GeoMatchStatement }}
+            GeoMatchStatement:
+              CountryCodes:
+                {{- range .Statement.GeoMatchStatement.CountryCodes }}
+                - {{ . }}
+                {{- end }}
+            {{- end }}
+            {{- if .Statement.ByteMatchStatement }}
+            ByteMatchStatement:
+              FieldToMatch:
+                {{- if .Statement.ByteMatchStatement.FieldToMatch.Headers }}
+                Headers:
+                  Name: "{{ .Statement.ByteMatchStatement.FieldToMatch.Headers.Name }}"
+                  MatchScope: "{{ .Statement.ByteMatchStatement.FieldToMatch.Headers.MatchScope }}"
+                {{- end }}
+                {{- if .Statement.ByteMatchStatement.FieldToMatch.UriPath }}
+                UriPath: {}
+                {{- end }}
+              PositionalConstraint: "{{ .Statement.ByteMatchStatement.PositionalConstraint }}"
+              SearchString: "{{ .Statement.ByteMatchStatement.SearchString }}"
+              TextTransformations:
+                {{- range .Statement.ByteMatchStatement.TextTransformations }}
+                - Priority: {{ .Priority }}
+                  Type: "{{ .Type }}"
+                {{- end }}
+            {{- end }}
+            {{- if .Statement.RateBasedStatement }}
+            RateBasedStatement:
+              Limit: {{ .Statement.RateBasedStatement.Limit }}
+              AggregateKeyType: "{{ .Statement.RateBasedStatement.AggregateKeyType }}"
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  FieldToMatch:
+                    UriPath: {}
+                  PositionalConstraint: "{{ .Statement.RateBasedStatement.ScopeDownStatement.PositionalConstraint }}"
+                  SearchString: "{{ .Statement.RateBasedStatement.ScopeDownStatement.SearchString }}"
+                  TextTransformations:
+                    {{- range .Statement.RateBasedStatement.ScopeDownStatement.TextTransformations }}
+                    - Priority: {{ .Priority }}
+                      Type: "{{ .Type }}"
+                    {{- end }}
+            {{- end }}
+          VisibilityConfig:
+            SampledRequestsEnabled: {{ .VisibilityConfig.SampledRequestsEnabled }}
+            CloudWatchMetricsEnabled: {{ .VisibilityConfig.CloudWatchMetricsEnabled }}
+            MetricName: "{{ .VisibilityConfig.MetricName }}"
+        {{- end }}
+{{- end }}
+
+      ########################################################################
+      # EXAMPLE RULES — COMMENTED OUT FOR REFERENCE
+      ########################################################################
+      
+      # - Name: "BlockSpecificIPs"
+      #   Priority: 0
+      #   Action:
+      #     Block: {}
+      #   Statement:
+      #     IPSetReferenceStatement:
+      #       Arn: arn:aws:wafv2:us-east-1:123456789012:ipset/BlockIPsSet/abcd1234-5678-90ef-ghij-klmnopqrstuv
+      #   VisibilityConfig:
+      #     SampledRequestsEnabled: true
+      #     CloudWatchMetricsEnabled: true
+      #     MetricName: "BlockSpecificIPs"
+
+      # - Name: "BlockCountries"
+      #   Priority: 1
+      #   Action:
+      #     Block: {}
+      #   Statement:
+      #     GeoMatchStatement:
+      #       CountryCodes:
+      #         - CN  # China
+      #         - RU  # Russia
+      #         - BR  # Brazil (include only if you want to block it)
+      #   VisibilityConfig:
+      #     SampledRequestsEnabled: true
+      #     CloudWatchMetricsEnabled: true
+      #     MetricName: "BlockCountries"
+
+      # - Name: "BlockHeaderXBadBot"
+      #   Priority: 2
+      #   Action:
+      #     Block: {}
+      #   Statement:
+      #     ByteMatchStatement:
+      #       FieldToMatch:
+      #         Headers:
+      #           Name: "X-Bad-Bot"       # Header name to match
+      #           MatchScope: EXACT
+      #       PositionalConstraint: EXACTLY
+      #       SearchString: "true"        # Expected header value
+      #       TextTransformations:
+      #         - Priority: 0
+      #           Type: NONE
+      #   VisibilityConfig:
+      #     SampledRequestsEnabled: true
+      #     CloudWatchMetricsEnabled: true
+      #     MetricName: "BlockHeaderXBadBot"
+
+      # - Name: "RateLimit100Reqs5Min"
+      #   Priority: 3
+      #   Action:
+      #     Block: {}
+      #   Statement:
+      #     RateBasedStatement:
+      #       Limit: 100                     # 100 requests per 5-minute period
+      #       AggregateKeyType: IP
+      #       ScopeDownStatement:            # Optional filter to apply only to a specific path
+      #         ByteMatchStatement:
+      #           FieldToMatch:
+      #             UriPath: {}
+      #           PositionalConstraint: STARTS_WITH
+      #           SearchString: "/api/"
+      #           TextTransformations:
+      #             - Priority: 0
+      #               Type: NONE
+      #   VisibilityConfig:
+      #     SampledRequestsEnabled: true
+      #     CloudWatchMetricsEnabled: true
+      #     MetricName: "RateLimit100Reqs5Min"
+
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
     {{- if .StageTemplateInfo.IsCustomDomain }}
@@ -90,7 +243,6 @@ Resources:
               - HEAD
               - OPTIONS
             CachePolicyId: !Ref PublicAssetsCachingPolicy
-
         Origins:
           - DomainName: !If
               - IsUSEast1
@@ -124,6 +276,9 @@ Resources:
           CachePolicyId: !Ref ServerCachingDisabledPolicy
           ForwardedValues:
             QueryString: true
+        {{- if .Waf }}
+        WebACLId: !Ref WebACL
+        {{- end }}
         ViewerCertificate:
           {{- if .StageTemplateInfo.IsCustomDomain }}
           AcmCertificateArn: !Ref AppCustomCertificate

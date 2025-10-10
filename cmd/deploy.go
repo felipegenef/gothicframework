@@ -143,6 +143,7 @@ func (command *DeployCommand) setup(stage string) error {
 	yamlInfo.Timeout = config.Deploy.ServerTimeout
 	yamlInfo.MemorySize = config.Deploy.ServerMemory
 	yamlInfo.ProjectName = config.ProjectName
+	yamlInfo.StageTemplateInfo.Waf = envConfig.Waf
 	yamlInfo.StageTemplateInfo.Name = stage
 	yamlInfo.StageTemplateInfo.BucketName = `BucketName: "` + envConfig.BucketName + `"`
 	yamlInfo.StageTemplateInfo.LambdaName = `LambdaName: "` + envConfig.LambdaName + `"`

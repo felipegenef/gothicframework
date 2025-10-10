@@ -1,5 +1,7 @@
 package cli
 
+import "github.com/felipegenef/gothicframework/pkg/helpers"
+
 type Config struct {
 	ProjectName    string `json:"projectName"`
 	GoModName      string `json:"goModuleName"`
@@ -23,5 +25,6 @@ type EnvVariables struct {
 	HostedZoneId   *string                `json:"hostedZoneId"`
 	CustomDomain   *string                `json:"customDomain"`
 	CertificateArn *string                `json:"certificateArn"`
+	Waf            *helpers.WafConfig     `json:"waf"`
 	ENV            map[string]interface{} `json:"env,omitempty"`
 }

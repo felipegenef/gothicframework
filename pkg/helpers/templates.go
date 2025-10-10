@@ -40,7 +40,74 @@ type StageTemplateInfo struct {
 	CertificateArn        string
 	IsCustomDomainWithArn bool
 	IsCustomDomain        bool
+	Waf                   *WafConfig
 	Env                   []EnvValueInfo
+}
+
+type WafConfig struct {
+	DefaultAction string    `json:"defaultAction"`
+	WafRules      []WafRule `json:"wafRules"`
+}
+
+type WafRule struct {
+	Name             string           `json:"name"`
+	Priority         int              `json:"priority"`
+	Action           Action           `json:"action"`
+	Statement        Statement        `json:"statement"`
+	VisibilityConfig VisibilityConfig `json:"visibilityConfig"`
+}
+
+type Action struct {
+	Block map[string]interface{} `json:"block,omitempty"` // empty object
+}
+
+type Statement struct {
+	IPSetReferenceStatement *IPSetReferenceStatement `json:"ipSetReferenceStatement,omitempty"`
+	GeoMatchStatement       *GeoMatchStatement       `json:"geoMatchStatement,omitempty"`
+	ByteMatchStatement      *ByteMatchStatement      `json:"byteMatchStatement,omitempty"`
+	RateBasedStatement      *RateBasedStatement      `json:"rateBasedStatement,omitempty"`
+}
+
+type IPSetReferenceStatement struct {
+	Arn string `json:"arn"`
+}
+
+type GeoMatchStatement struct {
+	CountryCodes []string `json:"countryCodes"`
+}
+
+type ByteMatchStatement struct {
+	FieldToMatch         FieldToMatch         `json:"fieldToMatch"`
+	PositionalConstraint string               `json:"positionalConstraint"`
+	SearchString         string               `json:"searchString"`
+	TextTransformations  []TextTransformation `json:"textTransformations"`
+}
+
+type FieldToMatch struct {
+	Headers *HeaderMatch `json:"headers,omitempty"`
+	UriPath *struct{}    `json:"uriPath,omitempty"`
+}
+
+type HeaderMatch struct {
+	Name       string `json:"name"`
+	MatchScope string `json:"matchScope"`
+}
+
+type TextTransformation struct {
+	Priority int    `json:"priority"`
+	Type     string `json:"type"`
+}
+
+type RateBasedStatement struct {
+	Limit              int                 `json:"limit"`
+	AggregateKeyType   string              `json:"aggregateKeyType"`
+	ScopeDownStatement *ByteMatchStatement `json:"scopeDownStatement,omitempty"`
+}
+
+type VisibilityConfig struct {
+	SampledRequestsEnabled   bool   `json:"sampledRequestsEnabled"`
+	CloudWatchMetricsEnabled bool   `json:"cloudWatchMetricsEnabled"`
+	MetricName               string `json:"metricName"`
 }
 
 type SamYamlTemplateInfo struct {
