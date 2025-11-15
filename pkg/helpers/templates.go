@@ -83,6 +83,10 @@ type ByteMatchStatement struct {
 	TextTransformations  []TextTransformation `json:"textTransformations"`
 }
 
+type ScopeDownStatement struct {
+	ByteMatchStatement *ByteMatchStatement `json:"byteMatchStatement,omitempty"`
+}
+
 type FieldToMatch struct {
 	Headers *HeaderMatch `json:"headers,omitempty"`
 	UriPath *struct{}    `json:"uriPath,omitempty"`
@@ -101,7 +105,7 @@ type TextTransformation struct {
 type RateBasedStatement struct {
 	Limit              int                 `json:"limit"`
 	AggregateKeyType   string              `json:"aggregateKeyType"`
-	ScopeDownStatement *ByteMatchStatement `json:"scopeDownStatement,omitempty"`
+	ScopeDownStatement *ScopeDownStatement `json:"scopeDownStatement,omitempty"`
 }
 
 type VisibilityConfig struct {

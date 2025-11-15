@@ -74,16 +74,16 @@ Resources:
         - !FindInMap [StagesMap, !Ref Stage, customDomain]
 {{- end }}
 
-{{- if .Waf }}
+{{- if .StageTemplateInfo.Waf }}
   WebACL:
     Type: AWS::WAFv2::WebACL
     Properties:
       Name: !Sub "${AWS::StackName}-web-acl"
       Scope: CLOUDFRONT
-      {{- if eq .Waf.DefaultAction "Allow" }}
+      {{- if eq .StageTemplateInfo.Waf.DefaultAction "Allow" }}
       DefaultAction:
         Allow: {}
-      {{- else if eq .Waf.DefaultAction "Block" }}
+      {{- else if eq .StageTemplateInfo.Waf.DefaultAction "Block" }}
       DefaultAction:
         Block: {}
       {{- else }}
@@ -95,7 +95,7 @@ Resources:
         CloudWatchMetricsEnabled: true
         MetricName: !Sub "${AWS::StackName}-web-acl-metric"
       Rules:
-        {{- range .Waf.WafRules }}
+        {{- range .StageTemplateInfo.Waf.WafRules }}
         - Name: "{{ .Name }}"
           Priority: {{ .Priority }}
           Action:
@@ -139,10 +139,10 @@ Resources:
                 ByteMatchStatement:
                   FieldToMatch:
                     UriPath: {}
-                  PositionalConstraint: "{{ .Statement.RateBasedStatement.ScopeDownStatement.PositionalConstraint }}"
-                  SearchString: "{{ .Statement.RateBasedStatement.ScopeDownStatement.SearchString }}"
+                  PositionalConstraint: "{{ .Statement.RateBasedStatement.ScopeDownStatement.ByteMatchStatement.PositionalConstraint }}"
+                  SearchString: "{{ .Statement.RateBasedStatement.ScopeDownStatement.ByteMatchStatement.SearchString }}"
                   TextTransformations:
-                    {{- range .Statement.RateBasedStatement.ScopeDownStatement.TextTransformations }}
+                    {{- range .Statement.RateBasedStatement.ScopeDownStatement.ByteMatchStatement.TextTransformations }}
                     - Priority: {{ .Priority }}
                       Type: "{{ .Type }}"
                     {{- end }}
@@ -276,8 +276,8 @@ Resources:
           CachePolicyId: !Ref ServerCachingDisabledPolicy
           ForwardedValues:
             QueryString: true
-        {{- if .Waf }}
-        WebACLId: !Ref WebACL
+        {{- if .StageTemplateInfo.Waf }}
+        WebACLId: !GetAtt WebACL.Arn
         {{- end }}
         ViewerCertificate:
           {{- if .StageTemplateInfo.IsCustomDomain }}
