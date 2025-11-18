@@ -40,6 +40,7 @@ type StageTemplateInfo struct {
 	CertificateArn        string
 	IsCustomDomainWithArn bool
 	IsCustomDomain        bool
+	WafArn                string
 	Env                   []EnvValueInfo
 }
 

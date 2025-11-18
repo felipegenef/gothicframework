@@ -139,10 +139,15 @@ func (command *DeployCommand) setup(stage string) error {
 		envConfig.BucketName = config.ProjectName + "-" + stage + "-" + appID
 	}
 
+	if envConfig.WafArn == nil {
+		envConfig.WafArn = new(string)
+	}
+
 	var yamlInfo helpers.SamYamlTemplateInfo
 	yamlInfo.Timeout = config.Deploy.ServerTimeout
 	yamlInfo.MemorySize = config.Deploy.ServerMemory
 	yamlInfo.ProjectName = config.ProjectName
+	yamlInfo.StageTemplateInfo.WafArn = *envConfig.WafArn
 	yamlInfo.StageTemplateInfo.Name = stage
 	yamlInfo.StageTemplateInfo.BucketName = `BucketName: "` + envConfig.BucketName + `"`
 	yamlInfo.StageTemplateInfo.LambdaName = `LambdaName: "` + envConfig.LambdaName + `"`

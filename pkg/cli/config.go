@@ -23,5 +23,6 @@ type EnvVariables struct {
 	HostedZoneId   *string                `json:"hostedZoneId"`
 	CustomDomain   *string                `json:"customDomain"`
 	CertificateArn *string                `json:"certificateArn"`
+	WafArn         *string                `json:"wafArn"`
 	ENV            map[string]interface{} `json:"env,omitempty"`
 }

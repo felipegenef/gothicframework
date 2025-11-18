@@ -15,18 +15,21 @@
         "hostedZoneId": null,
         "customDomain": null,
         "certificateArn": null,
+        "wafArn": null,
         "env": {}
       },
       "staging": {
         "hostedZoneId": null,
         "customDomain": null,
         "certificateArn": null,
+        "wafArn": null,
         "env": {}
       },
       "prod": {
         "hostedZoneId": null,
         "customDomain": null,
         "certificateArn": null,
+        "wafArn": null,
         "env": {}
       }
     }

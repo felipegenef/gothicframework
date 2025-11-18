@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
- This "{{.ProjectName}}" SAM stack is a Gothic App. You can extend the infrastructure as code by adding additional resources directly to the template file.
+  This "{{.ProjectName}}" SAM stack is a Gothic App. You can extend the infrastructure as code by adding additional resources directly to the template file.
 
 Globals:
 # Auto-generated code during deployment. Do not modify this section directly.
@@ -90,7 +90,6 @@ Resources:
               - HEAD
               - OPTIONS
             CachePolicyId: !Ref PublicAssetsCachingPolicy
-
         Origins:
           - DomainName: !If
               - IsUSEast1
@@ -124,6 +123,9 @@ Resources:
           CachePolicyId: !Ref ServerCachingDisabledPolicy
           ForwardedValues:
             QueryString: true
+        {{- if .StageTemplateInfo.WafArn }}
+        WebACLId: "{{.StageTemplateInfo.WafArn}}"
+        {{- end }}
         ViewerCertificate:
           {{- if .StageTemplateInfo.IsCustomDomain }}
           AcmCertificateArn: !Ref AppCustomCertificate
