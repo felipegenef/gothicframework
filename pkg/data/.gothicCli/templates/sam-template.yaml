@@ -73,79 +73,6 @@ Resources:
       SubjectAlternativeNames:
         - !FindInMap [StagesMap, !Ref Stage, customDomain]
 {{- end }}
-  
-      ########################################################################
-      # EXAMPLE RULES — COMMENTED OUT FOR REFERENCE
-      ########################################################################
-      
-      # - Name: "BlockSpecificIPs"
-      #   Priority: 0
-      #   Action:
-      #     Block: {}
-      #   Statement:
-      #     IPSetReferenceStatement:
-      #       Arn: arn:aws:wafv2:us-east-1:123456789012:ipset/BlockIPsSet/abcd1234-5678-90ef-ghij-klmnopqrstuv
-      #   VisibilityConfig:
-      #     SampledRequestsEnabled: true
-      #     CloudWatchMetricsEnabled: true
-      #     MetricName: "BlockSpecificIPs"
-
-      # - Name: "BlockCountries"
-      #   Priority: 1
-      #   Action:
-      #     Block: {}
-      #   Statement:
-      #     GeoMatchStatement:
-      #       CountryCodes:
-      #         - CN  # China
-      #         - RU  # Russia
-      #         - BR  # Brazil (include only if you want to block it)
-      #   VisibilityConfig:
-      #     SampledRequestsEnabled: true
-      #     CloudWatchMetricsEnabled: true
-      #     MetricName: "BlockCountries"
-
-      # - Name: "BlockHeaderXBadBot"
-      #   Priority: 2
-      #   Action:
-      #     Block: {}
-      #   Statement:
-      #     ByteMatchStatement:
-      #       FieldToMatch:
-      #         Headers:
-      #           Name: "X-Bad-Bot"       # Header name to match
-      #           MatchScope: EXACT
-      #       PositionalConstraint: EXACTLY
-      #       SearchString: "true"        # Expected header value
-      #       TextTransformations:
-      #         - Priority: 0
-      #           Type: NONE
-      #   VisibilityConfig:
-      #     SampledRequestsEnabled: true
-      #     CloudWatchMetricsEnabled: true
-      #     MetricName: "BlockHeaderXBadBot"
-
-      # - Name: "RateLimit100Reqs5Min"
-      #   Priority: 3
-      #   Action:
-      #     Block: {}
-      #   Statement:
-      #     RateBasedStatement:
-      #       Limit: 100                     # 100 requests per 5-minute period
-      #       AggregateKeyType: IP
-      #       ScopeDownStatement:            # Optional filter to apply only to a specific path
-      #         ByteMatchStatement:
-      #           FieldToMatch:
-      #             UriPath: {}
-      #           PositionalConstraint: STARTS_WITH
-      #           SearchString: "/api/"
-      #           TextTransformations:
-      #             - Priority: 0
-      #               Type: NONE
-      #   VisibilityConfig:
-      #     SampledRequestsEnabled: true
-      #     CloudWatchMetricsEnabled: true
-      #     MetricName: "RateLimit100Reqs5Min"
 
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
@@ -197,7 +124,7 @@ Resources:
           ForwardedValues:
             QueryString: true
         {{- if .StageTemplateInfo.WafArn }}
-        WebACLId: {{.StageTemplateInfo.WafArn}}
+        WebACLId: "{{.StageTemplateInfo.WafArn}}"
         {{- end }}
         ViewerCertificate:
           {{- if .StageTemplateInfo.IsCustomDomain }}
