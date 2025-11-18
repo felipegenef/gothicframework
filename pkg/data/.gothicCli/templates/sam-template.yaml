@@ -73,87 +73,7 @@ Resources:
       SubjectAlternativeNames:
         - !FindInMap [StagesMap, !Ref Stage, customDomain]
 {{- end }}
-
-{{- if .StageTemplateInfo.Waf }}
-  WebACL:
-    Type: AWS::WAFv2::WebACL
-    Properties:
-      Name: !Sub "${AWS::StackName}-web-acl"
-      Scope: CLOUDFRONT
-      {{- if eq .StageTemplateInfo.Waf.DefaultAction "Allow" }}
-      DefaultAction:
-        Allow: {}
-      {{- else if eq .StageTemplateInfo.Waf.DefaultAction "Block" }}
-      DefaultAction:
-        Block: {}
-      {{- else }}
-      DefaultAction:
-        Allow: {} # fallback seguro
-      {{- end }}
-      VisibilityConfig:
-        SampledRequestsEnabled: true
-        CloudWatchMetricsEnabled: true
-        MetricName: !Sub "${AWS::StackName}-web-acl-metric"
-      Rules:
-        {{- range .StageTemplateInfo.Waf.WafRules }}
-        - Name: "{{ .Name }}"
-          Priority: {{ .Priority }}
-          Action:
-            Block: {}
-          Statement:
-            {{- if .Statement.IPSetReferenceStatement }}
-            IPSetReferenceStatement:
-              Arn: {{ .Statement.IPSetReferenceStatement.Arn }}
-            {{- end }}
-            {{- if .Statement.GeoMatchStatement }}
-            GeoMatchStatement:
-              CountryCodes:
-                {{- range .Statement.GeoMatchStatement.CountryCodes }}
-                - {{ . }}
-                {{- end }}
-            {{- end }}
-            {{- if .Statement.ByteMatchStatement }}
-            ByteMatchStatement:
-              FieldToMatch:
-                {{- if .Statement.ByteMatchStatement.FieldToMatch.Headers }}
-                Headers:
-                  Name: "{{ .Statement.ByteMatchStatement.FieldToMatch.Headers.Name }}"
-                  MatchScope: "{{ .Statement.ByteMatchStatement.FieldToMatch.Headers.MatchScope }}"
-                {{- end }}
-                {{- if .Statement.ByteMatchStatement.FieldToMatch.UriPath }}
-                UriPath: {}
-                {{- end }}
-              PositionalConstraint: "{{ .Statement.ByteMatchStatement.PositionalConstraint }}"
-              SearchString: "{{ .Statement.ByteMatchStatement.SearchString }}"
-              TextTransformations:
-                {{- range .Statement.ByteMatchStatement.TextTransformations }}
-                - Priority: {{ .Priority }}
-                  Type: "{{ .Type }}"
-                {{- end }}
-            {{- end }}
-            {{- if .Statement.RateBasedStatement }}
-            RateBasedStatement:
-              Limit: {{ .Statement.RateBasedStatement.Limit }}
-              AggregateKeyType: "{{ .Statement.RateBasedStatement.AggregateKeyType }}"
-              ScopeDownStatement:
-                ByteMatchStatement:
-                  FieldToMatch:
-                    UriPath: {}
-                  PositionalConstraint: "{{ .Statement.RateBasedStatement.ScopeDownStatement.ByteMatchStatement.PositionalConstraint }}"
-                  SearchString: "{{ .Statement.RateBasedStatement.ScopeDownStatement.ByteMatchStatement.SearchString }}"
-                  TextTransformations:
-                    {{- range .Statement.RateBasedStatement.ScopeDownStatement.ByteMatchStatement.TextTransformations }}
-                    - Priority: {{ .Priority }}
-                      Type: "{{ .Type }}"
-                    {{- end }}
-            {{- end }}
-          VisibilityConfig:
-            SampledRequestsEnabled: {{ .VisibilityConfig.SampledRequestsEnabled }}
-            CloudWatchMetricsEnabled: {{ .VisibilityConfig.CloudWatchMetricsEnabled }}
-            MetricName: "{{ .VisibilityConfig.MetricName }}"
-        {{- end }}
-{{- end }}
-
+  
       ########################################################################
       # EXAMPLE RULES — COMMENTED OUT FOR REFERENCE
       ########################################################################
@@ -276,8 +196,8 @@ Resources:
           CachePolicyId: !Ref ServerCachingDisabledPolicy
           ForwardedValues:
             QueryString: true
-        {{- if .StageTemplateInfo.Waf }}
-        WebACLId: !GetAtt WebACL.Arn
+        {{- if .StageTemplateInfo.WafArn }}
+        WebACLId: {{.StageTemplateInfo.WafArn}}
         {{- end }}
         ViewerCertificate:
           {{- if .StageTemplateInfo.IsCustomDomain }}
