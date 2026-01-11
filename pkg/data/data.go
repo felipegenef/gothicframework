@@ -83,10 +83,10 @@ type GothicCliData struct {
 
 var DefaultCLIData = GothicCliData{
 	PublicFolderAssets: map[string]embed.FS{
-		"public/imageExample/blurred.jpeg":  publicFolder,
-		"public/imageExample/original.jpeg": publicFolder,
-		"public/favicon.ico":                publicFolder,
-		"public/styles.css":                 publicFolder,
+		"public/imageExample/blurred.png":  publicFolder,
+		"public/imageExample/original.png": publicFolder,
+		"public/favicon.ico":               publicFolder,
+		"public/styles.css":                publicFolder,
 	},
 	TemplateFiles: map[string]embed.FS{
 		".gothicCli/templates/Dockerfile-template":     templatesFolder,
