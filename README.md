@@ -1,7 +1,10 @@
-<img alt="background doc" src="Doc/Assets/background.jpeg" width="100%" height="280"/>
+<img alt="background doc" src="Doc/Assets/gothic-friends.png" width="100%"/>
 
-# <img alt="logo" src="Doc/Assets/logo.jpeg" width="100" /> Gothic Framework
+<p align="center">
+  <img alt="logo" src="Doc/Assets/gothic-g-no-bg.png" width="100"/>
+</p>
 
+<h1 align="center">Gothic Framework</h1>
 
 ## 🚀 Build Modern Web Apps with Ease
 
