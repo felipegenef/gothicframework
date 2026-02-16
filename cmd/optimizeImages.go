@@ -59,7 +59,10 @@ func newOptimizeImagesCommand(cli gothic_cli.GothicCli) RunEFunc {
 
 func (command *ImgOptimizationCommand) OptimizeImages() error {
 
-	config := command.cli.GetConfig()
+	config, err := command.cli.GetConfig()
+	if err != nil {
+		return err
+	}
 
 	// Create the output directory if it doesn't exist
 	if err := os.MkdirAll(command.outputDir, os.ModePerm); err != nil {

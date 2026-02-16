@@ -11,8 +11,6 @@ import (
 type InitCmdTemplateInfo struct {
 	ProjectName            string
 	GoModName              string
-	TailWindFileName       string
-	MainBinaryFileName     string
 	MainServerPackageName  string
 	MainServerFunctionName string
 	PageName               string
@@ -28,8 +26,9 @@ type RouteTemplateInfo struct {
 }
 
 type EnvValueInfo struct {
-	Value interface{}
-	Key   string
+	Value        interface{}
+	Key          string // Lambda env var name (spaces replaced with underscores)
+	SanitizedKey string // Alphanumeric-only key for CloudFormation Mappings lookups
 }
 type StageTemplateInfo struct {
 	Name                  string

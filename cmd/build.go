@@ -36,7 +36,12 @@ func (command *BuildCommand) Build() error {
 		return err
 	}
 
-	if err := command.cli.FileBasedRouter.Render(command.cli.GetConfig().GoModName); err != nil {
+	config, err := command.cli.GetConfig()
+	if err != nil {
+		return err
+	}
+
+	if err := command.cli.FileBasedRouter.Render(config.GoModName); err != nil {
 		return err
 	}
 

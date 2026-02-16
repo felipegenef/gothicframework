@@ -6,6 +6,8 @@ WORKDIR /build
 COPY go.mod go.sum ./
 COPY . .
 
+RUN apk add --no-cache ca-certificates
+
 RUN GOOS=linux go build -ldflags="-w -s" -o ./main main.go
 
 # Start lambda container from fresh image 
@@ -14,6 +16,7 @@ FROM scratch
 
 WORKDIR "/var/task"
 COPY --from=build /build/main /var/task
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.7.0 /lambda-adapter /opt/extensions/lambda-adapter
 

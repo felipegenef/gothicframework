@@ -10,13 +10,13 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
-	"sync"
 
 	gothci_cli "github.com/felipegenef/gothicframework/pkg/cli"
 	cli_data "github.com/felipegenef/gothicframework/pkg/data"
 	helpers "github.com/felipegenef/gothicframework/pkg/helpers"
 	"github.com/spf13/cobra"
 	"github.com/teris-io/shortid"
+	"golang.org/x/sync/errgroup"
 )
 
 var initCmd = &cobra.Command{
@@ -25,7 +25,7 @@ var initCmd = &cobra.Command{
 	Long: `Sets up the initial folder structure and essential files required to start building a Gothic app.
 
 This includes:
-  - A precompiled Tailwind binary
+  - Auto-download of the Tailwind CSS standalone binary (cached in ~/.cache/gothic-cli/bin/)
   - A gothic-config.json file
   - A basic example app to help you get started
   - A link to the official documentation for further guidance`,
@@ -70,8 +70,16 @@ func (command *InitCommand) CreateNewGothicApp(data cli_data.GothicCliData) erro
 	data.GoModName = gomodName
 	command.gothicCliData = data
 
-	command.initializeProject()
-	command.cli.InitializeModule(command.gothicCliData.GoModName)
+	if err := command.initializeProject(); err != nil {
+		return err
+	}
+	// Pre-cache the Tailwind binary during init
+	if _, err := command.cli.Tailwind.EnsureBinary(); err != nil {
+		return fmt.Errorf("error downloading tailwind binary: %w", err)
+	}
+	if err := command.cli.InitializeModule(command.gothicCliData.GoModName); err != nil {
+		return err
+	}
 	if err := command.cli.Templ.Render(); err != nil {
 		return err
 	}
@@ -99,10 +107,6 @@ func (command *InitCommand) initializeProject() error {
 	if err := command.createInitialDirs(); err != nil {
 		return err
 	}
-	// Create Tailwind with special permissions for execution based on OS
-	if err := command.createTailwindBinary(); err != nil {
-		return err
-	}
 	// Create dot files (embed api wont let dots on files)
 	if err := command.createHiddenFiles(); err != nil {
 		return err
@@ -128,38 +132,6 @@ func (command *InitCommand) createInitialDirs() error {
 	return nil
 }
 
-func (command *InitCommand) createTailwindBinary() error {
-	switch command.cli.Runtime {
-	case "linux":
-		data, _ := fs.ReadFile(command.gothicCliData.Tailwind.Linux, "tailwindcss-linux")
-		command.cli.Templates.InitCmdTemplateInfo.TailWindFileName = "tailwindcss"
-		command.cli.Templates.InitCmdTemplateInfo.MainBinaryFileName = "./tmp/main"
-		// Write the file with executable permissions (0755)
-		if err := os.WriteFile("tailwindcss", data, 0755); err != nil {
-			return fmt.Errorf("error creating file %s: %w", command.cli.Templates.InitCmdTemplateInfo.TailWindFileName, err)
-		}
-	case "darwin":
-		data, _ := fs.ReadFile(command.gothicCliData.Tailwind.Mac, "tailwindcss-mac")
-		command.cli.Templates.InitCmdTemplateInfo.TailWindFileName = "tailwindcss"
-		command.cli.Templates.InitCmdTemplateInfo.MainBinaryFileName = "./tmp/main"
-		// Write the file with executable permissions (0755)
-		if err := os.WriteFile("tailwindcss", data, 0755); err != nil {
-			return fmt.Errorf("error creating file %s: %w", command.cli.Templates.InitCmdTemplateInfo.TailWindFileName, err)
-		}
-	case "windows":
-		data, _ := fs.ReadFile(command.gothicCliData.Tailwind.Windows, "tailwindcss-windows.exe")
-		command.cli.Templates.InitCmdTemplateInfo.TailWindFileName = "tailwindcss.exe"
-		command.cli.Templates.InitCmdTemplateInfo.MainBinaryFileName = "./tmp/main.exe"
-		// Write the file with executable permissions (0755)
-		if err := os.WriteFile("tailwindcss.exe", data, 0755); err != nil {
-			return fmt.Errorf("error creating file %s: %w", command.cli.Templates.InitCmdTemplateInfo.TailWindFileName, err)
-		}
-	default:
-		return fmt.Errorf("error: unknown OS")
-	}
-	return nil
-}
-
 func (command *InitCommand) createHiddenFiles() error {
 
 	upperId, err := shortid.Generate()
@@ -171,118 +143,105 @@ func (command *InitCommand) createHiddenFiles() error {
 	lowerId := strings.ToLower(upperId)
 	id := re.ReplaceAllString(lowerId, "-")
 
-	var wg sync.WaitGroup
-	wg.Add(3)
+	g := new(errgroup.Group)
 
-	go func() {
-		os.WriteFile(".gothicCli/app-id.txt", []byte(id), 0644)
-		wg.Done()
-	}()
+	g.Go(func() error {
+		return os.WriteFile(".gothicCli/app-id.txt", []byte(id), 0644)
+	})
 
-	go func() {
-		os.WriteFile(".env", []byte(command.gothicCliData.Env), 0644)
-		wg.Done()
-	}()
+	g.Go(func() error {
+		return os.WriteFile(".env", []byte(command.gothicCliData.Env), 0644)
+	})
 
-	go func() {
-		os.WriteFile(".gitignore", []byte(command.gothicCliData.GitIgnore), 0644)
-		wg.Done()
-	}()
-	wg.Wait()
-	return nil
+	g.Go(func() error {
+		return os.WriteFile(".gitignore", []byte(command.gothicCliData.GitIgnore), 0644)
+	})
+
+	return g.Wait()
 
 }
 
 func (command *InitCommand) createInitialFileStructure() error {
-	mainServerData, _ := fs.ReadFile(command.gothicCliData.ServerFolder, "server/server.go")
+	mainServerData, err := fs.ReadFile(command.gothicCliData.ServerFolder, "server/server.go")
+	if err != nil {
+		return fmt.Errorf("error reading embedded server template: %w", err)
+	}
 	if err := os.WriteFile("main.go", mainServerData, 0644); err != nil {
 		return fmt.Errorf("error creating file %s: %w", "main.go", err)
 	}
 	command.cli.Templates.UpdateFromTemplate("main.go", "main.go", command.cli.Templates.InitCmdTemplateInfo)
 
-	var wg sync.WaitGroup
+	g := new(errgroup.Group)
 
 	for filename, fileContent := range command.gothicCliData.InitialFiles {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
+		g.Go(func() error {
 			if err := command.cli.Templates.CreateFromTemplate(fileContent, filename, filename, command.cli.Templates.InitCmdTemplateInfo); err != nil {
-				panic(fmt.Sprintf("error creating file %s: %v", "main.go", err))
+				return fmt.Errorf("error creating file %s: %w", filename, err)
 			}
-		}()
+			return nil
+		})
 	}
 
 	for filename, fileContent := range command.gothicCliData.TemplateFiles {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
+		g.Go(func() error {
 			if err := command.cli.Templates.CopyFromFs(fileContent, filename, filename); err != nil {
-				panic(fmt.Sprintf("error creating file %s: %v", "main.go", err))
+				return fmt.Errorf("error copying file %s: %w", filename, err)
 			}
-		}()
+			return nil
+		})
 	}
 
 	for filename, fileContent := range command.gothicCliData.PublicFolderAssets {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		g.Go(func() error {
 			data, err := fs.ReadFile(fileContent, filename)
 			if err != nil {
-				panic(fmt.Sprintf("error creating file %s: %v", filename, err))
+				return fmt.Errorf("error reading embedded asset %s: %w", filename, err)
 			}
 
 			if err := os.WriteFile(filename, data, 0644); err != nil {
-				panic(fmt.Sprintf("error creating file %s: %v", filename, err))
+				return fmt.Errorf("error creating file %s: %w", filename, err)
 			}
-		}()
+			return nil
+		})
 	}
 
-	wg.Wait()
-	return nil
+	return g.Wait()
 }
 
 func (command *InitCommand) createTemplateBasedFiles() error {
-	var wg sync.WaitGroup
-
-	wg.Add(len(command.gothicCliData.CustomTemplateBasedPages) + len(command.gothicCliData.CustomTemplateBasedComponents) + len(command.gothicCliData.CustomTemplateBasedRoutes))
+	g := new(errgroup.Group)
 
 	// Pages
 	for templateFilePath, pageName := range command.gothicCliData.CustomTemplateBasedPages {
-		go func() {
+		g.Go(func() error {
 			if err := command.cli.Templates.CreateFromTemplate(command.gothicCliData.SrcFolder, templateFilePath, templateFilePath, helpers.RouteTemplateInfo{PageName: pageName, GoModName: command.gothicCliData.GoModName}); err != nil {
-				panic(fmt.Sprintf("error creating file %s: %v", templateFilePath, err))
+				return fmt.Errorf("error creating page file %s: %w", templateFilePath, err)
 			}
-			wg.Done()
-		}()
-
+			return nil
+		})
 	}
 
 	// Components
 	for templateFilePath, componentName := range command.gothicCliData.CustomTemplateBasedComponents {
-		go func() {
+		g.Go(func() error {
 			if err := command.cli.Templates.CreateFromTemplate(command.gothicCliData.SrcFolder, templateFilePath, templateFilePath, helpers.RouteTemplateInfo{ComponentName: componentName, GoModName: command.gothicCliData.GoModName}); err != nil {
-				panic(fmt.Sprintf("error creating file %s: %v", templateFilePath, err))
+				return fmt.Errorf("error creating component file %s: %w", templateFilePath, err)
 			}
-			wg.Done()
-		}()
-
+			return nil
+		})
 	}
 
 	// API Routes
 	for templateFilePath, routeName := range command.gothicCliData.CustomTemplateBasedRoutes {
-		go func() {
+		g.Go(func() error {
 			if err := command.cli.Templates.CreateFromTemplate(command.gothicCliData.SrcFolder, templateFilePath, templateFilePath, helpers.RouteTemplateInfo{RouteName: routeName, GoModName: command.gothicCliData.GoModName}); err != nil {
-				panic(fmt.Sprintf("error creating file %s: %v", templateFilePath, err))
+				return fmt.Errorf("error creating api route file %s: %w", templateFilePath, err)
 			}
-			wg.Done()
-		}()
-
+			return nil
+		})
 	}
-	wg.Wait()
-	return nil
 
+	return g.Wait()
 }
 
 func (command *InitCommand) promptForProjectName() (string, error) {

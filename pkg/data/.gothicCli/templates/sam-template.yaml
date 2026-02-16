@@ -31,7 +31,7 @@ Mappings:
       {{.StageTemplateInfo.CertificateArn}}
       {{- end }}
       {{- range .StageTemplateInfo.Env }}
-      "{{ .Key }}": {{ .Value }}
+      {{ .SanitizedKey }}: {{ .Value }}
       {{- end }}
       HttpServerPort: ":8080" ## Labda WEB adapters use port 8080 by default. You can change that by setting env HTTP_LISTEN_ADDR and PORT to the new port.
 
@@ -52,7 +52,7 @@ Resources:
           # To make changes, update the values in gothic-config.json instead.
           HTTP_LISTEN_ADDR: !FindInMap [StagesMap, !Ref Stage, HttpServerPort]  ## Labda WEB adapters use port 8080 by default. You can change that by setting env HTTP_LISTEN_ADDR and PORT to the new port.
           {{- range .StageTemplateInfo.Env }}
-          "{{ .Key }}": !FindInMap [StagesMap, !Ref Stage, "{{ .Key }}"]
+          "{{ .Key }}": !FindInMap [StagesMap, !Ref Stage, {{ .SanitizedKey }}]
           {{- end }}
       FunctionUrlConfig:
         AuthType: AWS_IAM

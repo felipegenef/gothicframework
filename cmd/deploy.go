@@ -6,6 +6,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	gothic_cli "github.com/felipegenef/gothicframework/pkg/cli"
 	"github.com/felipegenef/gothicframework/pkg/helpers"
@@ -70,6 +71,10 @@ func newDeployCommand(cli gothic_cli.GothicCli) RunEFunc {
 }
 
 func (command *DeployCommand) Deploy(stage string, action string) error {
+	if err := gothic_cli.ValidateStageName(stage); err != nil {
+		return err
+	}
+
 	if err := command.setup(stage); err != nil {
 		return err
 	}
@@ -77,7 +82,12 @@ func (command *DeployCommand) Deploy(stage string, action string) error {
 		return err
 	}
 
-	if err := command.cli.FileBasedRouter.Render(command.cli.GetConfig().GoModName); err != nil {
+	config, err := command.cli.GetConfig()
+	if err != nil {
+		return err
+	}
+
+	if err := command.cli.FileBasedRouter.Render(config.GoModName); err != nil {
 		return err
 	}
 
@@ -89,13 +99,18 @@ func (command *DeployCommand) Deploy(stage string, action string) error {
 		return err
 	}
 
-	config := command.cli.GetConfig()
 	appID, err := command.cli.GetAppId()
 	if err != nil {
 		return fmt.Errorf("error getting app id: %v", err)
 	}
 
 	originBucketName := config.ProjectName + "-" + stage + "-" + appID
+	if err := gothic_cli.ValidateBucketName(originBucketName); err != nil {
+		return err
+	}
+
+	// Always clean up temp files, even if AWS operations fail
+	defer command.cleanup()
 
 	switch action {
 	case "deploy":
@@ -103,8 +118,12 @@ func (command *DeployCommand) Deploy(stage string, action string) error {
 			return err
 		}
 
-		defer command.cli.AWS.AddCloudFrontAssets(originBucketName, config.Deploy.Region, config.Deploy.Profile)
-		defer command.cli.AWS.CleanCloudFrontCache(config.ProjectName, stage, config.Deploy.Region, config.Deploy.Profile)
+		if err := command.cli.AWS.AddCloudFrontAssets(originBucketName, config.Deploy.Region, config.Deploy.Profile); err != nil {
+			return fmt.Errorf("error uploading assets to S3: %w", err)
+		}
+		if err := command.cli.AWS.CleanCloudFrontCache(config.ProjectName, stage, config.Deploy.Region, config.Deploy.Profile); err != nil {
+			return fmt.Errorf("error invalidating CloudFront cache: %w", err)
+		}
 	case "delete":
 		if err := command.cli.AWS.RemoveCloudFrontAssets(originBucketName, config.Deploy.Region, config.Deploy.Profile); err != nil {
 			return err
@@ -113,12 +132,14 @@ func (command *DeployCommand) Deploy(stage string, action string) error {
 			return err
 		}
 	}
-	command.cleanup()
 	return nil
 }
 
 func (command *DeployCommand) setup(stage string) error {
-	config := command.cli.GetConfig()
+	config, err := command.cli.GetConfig()
+	if err != nil {
+		return err
+	}
 
 	// Check if the Deploy configuration is present
 	if config.Deploy == nil {
@@ -171,9 +192,19 @@ func (command *DeployCommand) setup(stage string) error {
 			// For other types, use default formatting
 			formattedValue = fmt.Sprintf("%v", val)
 		}
+
+		// CloudFormation mapping key: strip all non-alphanumeric chars
+		sanitizedKey := strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+				return r
+			}
+			return -1
+		}, key)
+
 		env = append(env, helpers.EnvValueInfo{
-			Key:   key,
-			Value: formattedValue, // Convert interface{} to string
+			Key:          key,
+			Value:        formattedValue,
+			SanitizedKey: sanitizedKey,
 		})
 	}
 	yamlInfo.StageTemplateInfo.Env = env

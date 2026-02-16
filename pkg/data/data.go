@@ -28,15 +28,6 @@ var readme embed.FS
 //go:embed gothic-config.json
 var goticConfig embed.FS
 
-//go:embed tailwindcss-linux
-var tailwindCSSLinux embed.FS
-
-//go:embed tailwindcss-windows.exe
-var tailwindCSSWindows embed.FS
-
-//go:embed tailwindcss-mac
-var tailwindCSSMac embed.FS
-
 var env string = `HTTP_LISTEN_ADDR: ":8080"
 LOCAL_SERVE: "true"`
 
@@ -53,13 +44,6 @@ template.yaml
 samconfig.toml
 Dockerfile`
 
-type TailWindCSS struct {
-	Mac     embed.FS
-	Windows embed.FS
-	Linux   embed.FS
-	Config  embed.FS
-}
-
 type GothicCliData struct {
 	TemplateFiles                 map[string]embed.FS
 	InitialFiles                  map[string]embed.FS
@@ -68,10 +52,9 @@ type GothicCliData struct {
 	CustomTemplateBasedPages      map[string]string
 	CustomTemplateBasedComponents map[string]string
 	CustomTemplateBasedRoutes     map[string]string
-	GitIgnore                     string
-	Env                           string
-	Tailwind                      TailWindCSS
-	GoticConfig                   embed.FS
+	GitIgnore   string
+	Env         string
+	GoticConfig embed.FS
 	Readme                        embed.FS
 	MakeFile                      embed.FS
 	SrcFolder                     embed.FS
@@ -133,14 +116,8 @@ var DefaultCLIData = GothicCliData{
 		"src/pages",
 		"src/routes",
 	},
-	GitIgnore: gitIgnore,
-	Env:       env,
-	Tailwind: TailWindCSS{
-		Mac:     tailwindCSSMac,
-		Windows: tailwindCSSWindows,
-		Linux:   tailwindCSSLinux,
-		Config:  tailwindConfig,
-	},
+	GitIgnore:    gitIgnore,
+	Env:          env,
 	GoticConfig:  goticConfig,
 	Readme:       readme,
 	MakeFile:     makeFile,
