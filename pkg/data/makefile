@@ -20,7 +20,7 @@ templ:
 
 # Generate CSS based on classes located on templ files
 css:
-	./{{.TailWindFileName}} -i src/css/app.css -o public/styles.css  --minify
+	gothicframework css
 
 # Generate CSS based on classes located on templ files in watch mode
 optimize-images:

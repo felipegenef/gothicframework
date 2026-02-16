@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +37,6 @@ func init() {
 
 type HotReloadCommand struct {
 	cli               *gothic_cli.GothicCli
-	tailwindFile      string
 	mainBinaryName    string
 	runCmd            *exec.Cmd
 	runCancel         context.CancelFunc
@@ -49,15 +47,12 @@ type HotReloadCommand struct {
 }
 
 func newHotReloadCommandCli(cli *gothic_cli.GothicCli) HotReloadCommand {
-	var tailwindBinary string = "./tailwindcss"
-	var mainBinary string = "tmp/main"
-	if runtime.GOOS == "windows" {
-		tailwindBinary = "./tailwindcss.exe"
+	mainBinary := "tmp/main"
+	if cli.Runtime == "windows" {
 		mainBinary = "tmp/main.exe"
 	}
 	return HotReloadCommand{
 		cli:               cli,
-		tailwindFile:      tailwindBinary,
 		mainBinaryName:    mainBinary,
 		excludedDirs:      []string{"assets", "tmp", "vendor", "public", "routes"},
 		watchedExtensions: []string{".go", ".tpl", ".tmpl", ".templ", ".html"},
@@ -75,19 +70,29 @@ func newHotReloadCommand(cli gothic_cli.GothicCli) RunEFunc {
 
 func (command *HotReloadCommand) HotReload() error {
 	godotenv.Load()
+	// Load config to pick up tailwindBinary override if present
+	command.cli.GetConfig()
+	// Ensure tailwind binary is available before starting watch
+	if _, err := command.cli.Tailwind.EnsureBinary(); err != nil {
+		return fmt.Errorf("error resolving tailwind binary: %w", err)
+	}
 	port := os.Getenv("HTTP_LISTEN_ADDR")
 	if port == "" {
 		port = ":8080"
 	}
 	targetURL, err := url.Parse("http://localhost" + port)
 	if err != nil {
-		log.Fatalf("Invalid target URL: %v", err)
+		return fmt.Errorf("invalid target URL: %w", err)
 	}
 	go command.watchTailwindChanges()
 	// Wait for tailwind process to render css for the first time
 	time.Sleep(4 * time.Second)
 	go command.watchForChanges()
-	go command.cli.Proxy.RunProxy("localhost", 3000, targetURL)
+
+	proxyErrCh := make(chan error, 1)
+	go func() {
+		proxyErrCh <- command.cli.Proxy.RunProxy("localhost", 3000, targetURL)
+	}()
 
 	banner := `
  ██████╗  ██████╗ ████████╗██╗  ██╗██╗ ██████╗     █████╗ ██████╗ ██████╗ 
@@ -103,8 +108,11 @@ func (command *HotReloadCommand) HotReload() error {
 `
 	fmt.Println(banner)
 	command.openBrowser("http://127.0.0.1:3000")
-	select {}
 
+	if err := <-proxyErrCh; err != nil {
+		return fmt.Errorf("proxy server error: %w", err)
+	}
+	return nil
 }
 
 func (command *HotReloadCommand) isExcludedDir(path string) bool {
@@ -196,13 +204,10 @@ func (command *HotReloadCommand) shouldHandle(path string, op fsnotify.Op) bool 
 func (command *HotReloadCommand) watchTailwindChanges() {
 	log.Println("Starting Tailwind in watch mode...")
 
-	tailWindCmd := exec.Command(command.tailwindFile, "--watch=always", "-i", "src/css/app.css", "-o", "public/styles.css", "--minify")
-	tailWindCmd.Stdout = os.Stdout
-	tailWindCmd.Stderr = os.Stderr
-
-	// Start the process asynchronously (non-blocking, like Node's spawn)
-	if err := tailWindCmd.Start(); err != nil {
+	tailWindCmd, err := command.cli.Tailwind.WatchStart()
+	if err != nil {
 		fmt.Printf("Failed to start Tailwind watch process: %v", err)
+		return
 	}
 
 	log.Printf("Tailwind is watching with PID %d", tailWindCmd.Process.Pid)
@@ -223,7 +228,12 @@ func (command *HotReloadCommand) rebuild() {
 	defer command.mutex.Unlock()
 
 	log.Println("Build routes...")
-	if err := command.cli.FileBasedRouter.Render(command.cli.GetConfig().GoModName); err != nil {
+	config, err := command.cli.GetConfig()
+	if err != nil {
+		fmt.Printf("error reading config: %v", err)
+		return
+	}
+	if err := command.cli.FileBasedRouter.Render(config.GoModName); err != nil {
 		fmt.Printf("error building routes: %v", err)
 		return
 	}
@@ -270,7 +280,7 @@ func (command *HotReloadCommand) rebuild() {
 func (command *HotReloadCommand) openBrowser(url string) error {
 	var cmd *exec.Cmd
 
-	switch runtime.GOOS {
+	switch command.cli.Runtime {
 	case "windows":
 		cmd = exec.Command("cmd", "/c", "start", url)
 	case "darwin":

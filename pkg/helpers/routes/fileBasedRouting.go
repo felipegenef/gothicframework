@@ -617,8 +617,8 @@ func (helper *FileBasedRouteHelper) normalizeHttpPath(path string) string {
 	path = strings.TrimSuffix(path, "_templ.go")
 	path = strings.TrimSuffix(path, ".go")
 
-	// Determine if it’s HTTP (pages/components) or API
-	isHttpRoute := strings.Contains(path, "src/pages") || strings.Contains(path, "src/components")
+	// Determine if it's a route that needs var_ to {param} conversion
+	isHttpRoute := strings.Contains(path, "src/pages") || strings.Contains(path, "src/components") || strings.Contains(path, "src/api")
 
 	// Remove base prefixes
 	path = strings.TrimPrefix(path, "src/pages")

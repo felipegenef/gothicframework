@@ -3,7 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -44,7 +43,7 @@ func NewCli() GothicCli {
 	cli := GothicCli{
 		Runtime:         runtime.GOOS,
 		Templates:       helpers.NewTemplateHelper(),
-		Tailwind:        helpers.NewTailwindHelper(),
+		Tailwind:        helpers.NewTailwindHelper(runtime.GOOS, runtime.GOARCH),
 		Templ:           helpers.NewTemplHelper(),
 		AwsSam:          helpers.NewAwsSamHelper(),
 		AWS:             helpers.NewAwsHelper(),
@@ -71,36 +70,40 @@ func (cli *GothicCli) GetAppId() (string, error) {
 	return appID, nil
 }
 
-func (cli *GothicCli) GetConfig() Config {
+func (cli *GothicCli) GetConfig() (Config, error) {
 	if cli.config != nil {
-		return *cli.config
+		return *cli.config, nil
 	}
 	var config Config
 	file, err := os.Open("gothic-config.json")
 	if err != nil {
-		log.Fatalf("Error opening file: %v", err)
-		panic(err)
+		return Config{}, fmt.Errorf("error opening gothic-config.json: %w", err)
 	}
 	defer file.Close()
 
-	// Decode the JSON from the file
 	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&config)
-	if err != nil {
-		log.Fatalf("Error decoding JSON: %v", err)
-		panic(err)
+	if err := decoder.Decode(&config); err != nil {
+		return Config{}, fmt.Errorf("error decoding gothic-config.json: %w", err)
+	}
+	if config.TailwindBinary != "" {
+		cli.Tailwind.ConfigOverride = config.TailwindBinary
 	}
 	cli.config = &config
-	return config
+	return config, nil
 }
 
-func (cli *GothicCli) InitializeModule(goModuleName string) {
+func (cli *GothicCli) InitializeModule(goModuleName string) error {
 	initCmd := exec.Command("go", "mod", "init", goModuleName)
 	initCmd.Stdin = os.Stdin
 	initCmd.Stderr = os.Stderr
-	initCmd.Run()
+	if err := initCmd.Run(); err != nil {
+		return fmt.Errorf("error running go mod init: %w", err)
+	}
 	tidyCmd := exec.Command("go", "mod", "tidy")
 	tidyCmd.Stdin = os.Stdin
 	tidyCmd.Stderr = os.Stderr
-	tidyCmd.Run()
+	if err := tidyCmd.Run(); err != nil {
+		return fmt.Errorf("error running go mod tidy: %w", err)
+	}
+	return nil
 }

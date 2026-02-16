@@ -2,7 +2,6 @@ package helpers
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 )
@@ -20,12 +19,10 @@ func (helper *AwsSamHelper) Build() error {
 	samBuildCMD.Stdin = os.Stdin
 	samBuildCMD.Stderr = os.Stderr
 
-	// Run the command
-	err := samBuildCMD.Run()
-	if err != nil {
-		fmt.Printf("Error building AWS Sam app:%v", err)
+	if err := samBuildCMD.Run(); err != nil {
+		return fmt.Errorf("error building AWS SAM app: %w", err)
 	}
-	return err
+	return nil
 }
 
 func (helper *AwsSamHelper) Deploy(stage string, stackName string, awsProfile string) error {
@@ -34,25 +31,20 @@ func (helper *AwsSamHelper) Deploy(stage string, stackName string, awsProfile st
 	samDeployCMD.Stdin = os.Stdin
 	samDeployCMD.Stderr = os.Stderr
 
-	// Run the command
 	if err := samDeployCMD.Run(); err != nil {
-		log.Fatalf("Error deploying app:%v", err)
+		return fmt.Errorf("error deploying app: %w", err)
 	}
-
 	return nil
 }
 
 func (helper *AwsSamHelper) DeleteStack(stage string, stackName string, awsProfile string) error {
-
 	samDeleteCMD := exec.Command("sam", "delete", "--stack-name", stackName+"-"+stage, "--profile", awsProfile)
 	samDeleteCMD.Stdout = os.Stdout
 	samDeleteCMD.Stdin = os.Stdin
 	samDeleteCMD.Stderr = os.Stderr
 
-	// Run the command
-	err := samDeleteCMD.Run()
-	if err != nil {
-		log.Fatalf("Error deleting app:%v", err)
+	if err := samDeleteCMD.Run(); err != nil {
+		return fmt.Errorf("error deleting app: %w", err)
 	}
-	return err
+	return nil
 }

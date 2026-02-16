@@ -1,8 +1,31 @@
 package cli
 
+import (
+	"fmt"
+	"regexp"
+)
+
+var validS3BucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.\-]{1,61}[a-z0-9]$`)
+var validStageName = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+
+func ValidateBucketName(name string) error {
+	if !validS3BucketName.MatchString(name) {
+		return fmt.Errorf("invalid S3 bucket name %q: must be 3-63 characters, lowercase alphanumeric, dots, or hyphens", name)
+	}
+	return nil
+}
+
+func ValidateStageName(name string) error {
+	if !validStageName.MatchString(name) {
+		return fmt.Errorf("invalid stage name %q: must be alphanumeric only", name)
+	}
+	return nil
+}
+
 type Config struct {
 	ProjectName    string `json:"projectName"`
 	GoModName      string `json:"goModuleName"`
+	TailwindBinary string `json:"tailwindBinary,omitempty"`
 	OptimizeImages struct {
 		LowResolutionRate int `json:"lowResolutionRate"`
 	} `json:"optimizeImages"`

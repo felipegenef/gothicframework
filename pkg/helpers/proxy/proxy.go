@@ -69,7 +69,7 @@ func NewsseHandler() *sseHandler {
 }
 
 // RunProxy configures and starts the proxy server with bind, port, and target
-func (proxy *ProxyHelper) RunProxy(bind string, port int, target *url.URL) {
+func (proxy *ProxyHelper) RunProxy(bind string, port int, target *url.URL) error {
 	proxy.Target = target
 	proxy.URL = fmt.Sprintf("http://%s:%d", bind, port)
 
@@ -86,10 +86,10 @@ func (proxy *ProxyHelper) RunProxy(bind string, port int, target *url.URL) {
 
 	log.Printf("Starting proxy at %s -> %s\n", proxy.URL, target)
 
-	err := http.ListenAndServe(fmt.Sprintf("%s:%d", bind, port), proxy)
-	if err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	if err := http.ListenAndServe(fmt.Sprintf("%s:%d", bind, port), proxy); err != nil {
+		return fmt.Errorf("failed to start proxy server: %w", err)
 	}
+	return nil
 }
 
 // ServeHTTP handles internal routes and normal proxying
@@ -206,13 +206,21 @@ func (rt *roundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	var resp *http.Response
 	var err error
 	for retries := 0; retries < rt.maxRetries; retries++ {
+		if r.Context().Err() != nil {
+			return nil, r.Context().Err()
+		}
 		req := r.Clone(r.Context())
 		if bodyBytes != nil {
 			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
 		resp, err = http.DefaultTransport.RoundTrip(req)
 		if err != nil {
-			time.Sleep(rt.initialDelay * time.Duration(math.Pow(rt.backoffExponent, float64(retries))))
+			delay := rt.initialDelay * time.Duration(math.Pow(rt.backoffExponent, float64(retries)))
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
 			continue
 		}
 		rt.setShouldSkipResponseModificationHeader(r, resp)
