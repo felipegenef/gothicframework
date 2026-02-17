@@ -1,20 +1,21 @@
 package helpers
 
 import (
+	"bytes"
+	"encoding/gob"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/a-h/templ"
 	helpers "github.com/felipegenef/gothicframework/pkg/helpers"
 	"github.com/go-chi/chi/v5"
-	"github.com/joho/godotenv"
 )
 
 type ConfigType int
@@ -52,244 +53,103 @@ var DefaultConfig = RouteConfig[any]{
 
 var DefaultApiConfig = ApiRouteConfig{
 	HttpMethod: GET,
+	Type:       DYNAMIC,
 }
-
-type isrLocalCache struct {
-	data       any
-	revalidate time.Time
-}
-
-var localCacheMutex sync.RWMutex
-var localCacheValue map[string]any = make(map[string]any)
 
 func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, component func(T) templ.Component) {
-	godotenv.Load()
-	var localServe = os.Getenv("LOCAL_SERVE")
-	var isLocal = len(localServe) > 0 && localServe == "true"
-	if config.Type == STATIC {
-		switch config.HttpMethod {
-		case GET:
-			r.Get(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", "max-age=31536000")
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getCachedOrUpdate(fullURL, w, r)))
-			})
-		case POST:
-			r.Post(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", "max-age=31536000")
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getCachedOrUpdate(fullURL, w, r)))
-			})
-		case PUT:
-			r.Put(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", "max-age=31536000")
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getCachedOrUpdate(fullURL, w, r)))
-			})
-		case PATCH:
-			r.Patch(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", "max-age=31536000")
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getCachedOrUpdate(fullURL, w, r)))
-			})
-		case DELETE:
-			r.Delete(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", "max-age=31536000")
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getCachedOrUpdate(fullURL, w, r)))
-			})
-		}
+	handler := config.resolveHandler(component)
 
+	switch config.HttpMethod {
+	case GET:
+		r.Get(httpPath, handler)
+	case POST:
+		r.Post(httpPath, handler)
+	case PUT:
+		r.Put(httpPath, handler)
+	case PATCH:
+		r.Patch(httpPath, handler)
+	case DELETE:
+		r.Delete(httpPath, handler)
 	}
-
-	if config.Type == DYNAMIC {
-		switch config.HttpMethod {
-		case GET:
-			r.Get(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				config.Render(r, w, component(config.Middleware(w, r)))
-			})
-		case POST:
-			r.Post(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				config.Render(r, w, component(config.Middleware(w, r)))
-			})
-		case PUT:
-			r.Put(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				config.Render(r, w, component(config.Middleware(w, r)))
-			})
-		case PATCH:
-			r.Patch(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				config.Render(r, w, component(config.Middleware(w, r)))
-			})
-		case DELETE:
-			r.Delete(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				config.Render(r, w, component(config.Middleware(w, r)))
-			})
-		}
-
-	}
-
-	if config.Type == ISR {
-		switch config.HttpMethod {
-		case GET:
-			r.Get(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", fmt.Sprintf(
-						"max-age=%v, stale-while-revalidate=%v, stale-if-error=%v",
-						config.RevalidateInSec, config.RevalidateInSec, config.RevalidateInSec,
-					))
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getISRCachedOrUpdate(fullURL, w, r)))
-
-			})
-		case POST:
-			r.Post(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", fmt.Sprintf(
-						"max-age=%v, stale-while-revalidate=%v, stale-if-error=%v",
-						config.RevalidateInSec, config.RevalidateInSec, config.RevalidateInSec,
-					))
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getISRCachedOrUpdate(fullURL, w, r)))
-			})
-		case PUT:
-			r.Put(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", fmt.Sprintf(
-						"max-age=%v, stale-while-revalidate=%v, stale-if-error=%v",
-						config.RevalidateInSec, config.RevalidateInSec, config.RevalidateInSec,
-					))
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getISRCachedOrUpdate(fullURL, w, r)))
-			})
-		case PATCH:
-			r.Patch(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", fmt.Sprintf(
-						"max-age=%v, stale-while-revalidate=%v, stale-if-error=%v",
-						config.RevalidateInSec, config.RevalidateInSec, config.RevalidateInSec,
-					))
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getISRCachedOrUpdate(fullURL, w, r)))
-			})
-		case DELETE:
-			r.Delete(httpPath, func(w http.ResponseWriter, r *http.Request) {
-				if !isLocal {
-					w.Header().Set("Cache-Control", fmt.Sprintf(
-						"max-age=%v, stale-while-revalidate=%v, stale-if-error=%v",
-						config.RevalidateInSec, config.RevalidateInSec, config.RevalidateInSec,
-					))
-					config.Render(r, w, component(config.Middleware(w, r)))
-					return
-				}
-				fullURL := r.URL.RequestURI() // this includes query parameters
-				config.Render(r, w, component(config.getISRCachedOrUpdate(fullURL, w, r)))
-			})
-		}
-	}
-
 }
 
-func (config *RouteConfig[T]) getISRCachedOrUpdate(fullURL string, w http.ResponseWriter, r *http.Request) T {
-	localCacheMutex.Lock()
-	defer localCacheMutex.Unlock()
-
-	cacheItem, exists := localCacheValue[fullURL]
-	now := time.Now()
-
-	if !exists {
-		// Cache miss: generate and store new data with revalidation time
-		newData := config.Middleware(w, r)
-		localCacheValue[fullURL] = isrLocalCache{
-			data:       newData,
-			revalidate: now.Add(time.Duration(config.RevalidateInSec) * time.Second),
-		}
-		return newData
+func (config *RouteConfig[T]) resolveHandler(component func(T) templ.Component) http.HandlerFunc {
+	switch config.Type {
+	case STATIC:
+		store := getGlobalCacheStore()
+		cacheType := getGlobalCacheType()
+		return config.staticHandler(component, store, cacheType)
+	case ISR:
+		store := getGlobalCacheStore()
+		cacheType := getGlobalCacheType()
+		return config.isrHandler(component, store, cacheType)
+	default:
+		return config.dynamicHandler(component)
 	}
-
-	// Try to assert the cache item to expected struct type
-	cached, ok := cacheItem.(isrLocalCache)
-	if !ok {
-		// Cache is corrupted or wrong type; regenerate
-		newData := config.Middleware(w, r)
-		localCacheValue[fullURL] = isrLocalCache{
-			data:       newData,
-			revalidate: now.Add(time.Duration(config.RevalidateInSec) * time.Second),
-		}
-		return newData
-	}
-
-	// If revalidation time has passed, refresh the data
-	if cached.revalidate.Before(now) {
-		newData := config.Middleware(w, r)
-		localCacheValue[fullURL] = isrLocalCache{
-			data:       newData,
-			revalidate: now.Add(time.Duration(config.RevalidateInSec) * time.Second),
-		}
-		return newData
-	}
-
-	// Safe type assertion with check to avoid panic if cached.data is nil
-	if val, ok := cached.data.(T); ok {
-		return val
-	}
-
-	// Fallback: data is nil or not of type T
-	newData := config.Middleware(w, r)
-	localCacheValue[fullURL] = isrLocalCache{
-		data:       newData,
-		revalidate: now.Add(time.Duration(config.RevalidateInSec) * time.Second),
-	}
-	return newData
 }
 
-func (config *RouteConfig[T]) getCachedOrUpdate(fullURL string, w http.ResponseWriter, r *http.Request) T {
-	localCacheMutex.Lock()
-	defer localCacheMutex.Unlock()
-
-	if cached, exists := localCacheValue[fullURL]; exists {
-		// Safe type assertion with check to avoid panic
-		if val, ok := cached.(T); ok {
-			return val
-		}
-		// Fallback if data in cache is nil or wrong type
+func (config *RouteConfig[T]) dynamicHandler(component func(T) templ.Component) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		config.Render(r, w, component(config.Middleware(w, r)))
 	}
+}
 
-	// Cache miss or failed assertion: generate and store
-	result := config.Middleware(w, r)
-	localCacheValue[fullURL] = result
-	return result
+func (config *RouteConfig[T]) staticHandler(component func(T) templ.Component, store CacheStore, cacheType CacheType) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CACHE_CONTROL_HEADERS mode: set headers and render directly (no store caching)
+		if cacheType == CACHE_CONTROL_HEADERS {
+			w.Header().Set("Cache-Control", "max-age=31536000")
+			config.Render(r, w, component(config.Middleware(w, r)))
+			return
+		}
+
+		// Check cache
+		key := r.URL.RequestURI()
+		if cached, ok := store.Get(key); ok {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(cached)
+			return
+		}
+
+		// Cache miss: render to buffer, cache, and write response
+		middlewareResult := config.Middleware(w, r)
+		var buf bytes.Buffer
+		component(middlewareResult).Render(r.Context(), &buf)
+		store.Set(key, buf.Bytes(), 0)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(buf.Bytes())
+	}
+}
+
+func (config *RouteConfig[T]) isrHandler(component func(T) templ.Component, store CacheStore, cacheType CacheType) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CACHE_CONTROL_HEADERS mode: set headers and render directly (no store caching)
+		if cacheType == CACHE_CONTROL_HEADERS {
+			w.Header().Set("Cache-Control", fmt.Sprintf(
+				"max-age=%v, stale-while-revalidate=%v, stale-if-error=%v",
+				config.RevalidateInSec, config.RevalidateInSec, config.RevalidateInSec,
+			))
+			config.Render(r, w, component(config.Middleware(w, r)))
+			return
+		}
+
+		// Check cache
+		key := r.URL.RequestURI()
+		if cached, ok := store.Get(key); ok {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(cached)
+			return
+		}
+
+		// Cache miss: render to buffer, cache with TTL, and write response
+		ttl := time.Duration(config.RevalidateInSec) * time.Second
+		middlewareResult := config.Middleware(w, r)
+		var buf bytes.Buffer
+		component(middlewareResult).Render(r.Context(), &buf)
+		store.Set(key, buf.Bytes(), ttl)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(buf.Bytes())
+	}
 }
 
 func (config *RouteConfig[T]) Render(r *http.Request, w http.ResponseWriter, component templ.Component) error {
@@ -297,27 +157,139 @@ func (config *RouteConfig[T]) Render(r *http.Request, w http.ResponseWriter, com
 }
 
 type ApiRouteConfig struct {
-	HttpMethod HttpMethod
+	Type            ConfigType
+	HttpMethod      HttpMethod
+	RevalidateInSec int
 }
 
 func (config *ApiRouteConfig) RegisterRoute(r chi.Router, httpPath string, fn func(w http.ResponseWriter, r *http.Request)) {
+	handler := config.resolveApiHandler(fn)
+
 	switch config.HttpMethod {
 	case GET:
-		r.Get(httpPath, fn)
+		r.Get(httpPath, handler)
 	case POST:
-		r.Post(httpPath, fn)
+		r.Post(httpPath, handler)
 	case PUT:
-		r.Put(httpPath, fn)
+		r.Put(httpPath, handler)
 	case PATCH:
-		r.Patch(httpPath, fn)
+		r.Patch(httpPath, handler)
 	case DELETE:
-		r.Delete(httpPath, fn)
+		r.Delete(httpPath, handler)
 	}
-
 }
 
-func (config *ApiRouteConfig) Render(r *http.Request, w http.ResponseWriter, component templ.Component) error {
-	return component.Render(r.Context(), w)
+type cachedAPIResponse struct {
+	StatusCode  int
+	ContentType string
+	Body        []byte
+}
+
+func encodeCachedAPIResponse(resp cachedAPIResponse) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(resp); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decodeCachedAPIResponse(data []byte) (cachedAPIResponse, error) {
+	var resp cachedAPIResponse
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&resp); err != nil {
+		return resp, err
+	}
+	return resp, nil
+}
+
+func replayAPIResponse(w http.ResponseWriter, resp cachedAPIResponse) {
+	if resp.ContentType != "" {
+		w.Header().Set("Content-Type", resp.ContentType)
+	}
+	w.WriteHeader(resp.StatusCode)
+	w.Write(resp.Body)
+}
+
+func (config *ApiRouteConfig) resolveApiHandler(fn func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
+	switch config.Type {
+	case STATIC:
+		store := getGlobalCacheStore()
+		cacheType := getGlobalCacheType()
+		return config.apiStaticHandler(fn, store, cacheType)
+	case ISR:
+		store := getGlobalCacheStore()
+		cacheType := getGlobalCacheType()
+		return config.apiISRHandler(fn, store, cacheType)
+	default:
+		return fn
+	}
+}
+
+func (config *ApiRouteConfig) apiStaticHandler(fn func(http.ResponseWriter, *http.Request), store CacheStore, cacheType CacheType) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cacheType == CACHE_CONTROL_HEADERS {
+			w.Header().Set("Cache-Control", "max-age=31536000")
+			fn(w, r)
+			return
+		}
+
+		key := "api:" + r.URL.RequestURI()
+		if cached, ok := store.Get(key); ok {
+			resp, err := decodeCachedAPIResponse(cached)
+			if err == nil {
+				replayAPIResponse(w, resp)
+				return
+			}
+		}
+
+		rec := httptest.NewRecorder()
+		fn(rec, r)
+
+		resp := cachedAPIResponse{
+			StatusCode:  rec.Code,
+			ContentType: rec.Header().Get("Content-Type"),
+			Body:        rec.Body.Bytes(),
+		}
+		if encoded, err := encodeCachedAPIResponse(resp); err == nil {
+			store.Set(key, encoded, 0)
+		}
+		replayAPIResponse(w, resp)
+	}
+}
+
+func (config *ApiRouteConfig) apiISRHandler(fn func(http.ResponseWriter, *http.Request), store CacheStore, cacheType CacheType) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cacheType == CACHE_CONTROL_HEADERS {
+			w.Header().Set("Cache-Control", fmt.Sprintf(
+				"max-age=%v, stale-while-revalidate=%v, stale-if-error=%v",
+				config.RevalidateInSec, config.RevalidateInSec, config.RevalidateInSec,
+			))
+			fn(w, r)
+			return
+		}
+
+		key := "api:" + r.URL.RequestURI()
+		if cached, ok := store.Get(key); ok {
+			resp, err := decodeCachedAPIResponse(cached)
+			if err == nil {
+				replayAPIResponse(w, resp)
+				return
+			}
+		}
+
+		rec := httptest.NewRecorder()
+		fn(rec, r)
+
+		ttl := time.Duration(config.RevalidateInSec) * time.Second
+		resp := cachedAPIResponse{
+			StatusCode:  rec.Code,
+			ContentType: rec.Header().Get("Content-Type"),
+			Body:        rec.Body.Bytes(),
+		}
+		if encoded, err := encodeCachedAPIResponse(resp); err == nil {
+			store.Set(key, encoded, ttl)
+		}
+		replayAPIResponse(w, resp)
+	}
 }
 
 type RouteTemplate struct {

@@ -131,6 +131,10 @@ func (command *HotReloadCommand) watchForChanges() {
 		fmt.Printf("error creating watcher: %v", err)
 	}
 	defer watcher.Close()
+	// Watch the project root directory for changes to main.go and other root-level files
+	if err := watcher.Add("."); err != nil {
+		fmt.Printf("error watching project root: %v", err)
+	}
 	err = filepath.Walk("src", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -263,6 +267,7 @@ func (command *HotReloadCommand) rebuild() {
 	command.runCancel = cancel
 
 	runCmd := exec.CommandContext(ctx, command.mainBinaryName)
+	runCmd.Env = append(os.Environ(), "GOTHIC_MODE=dev")
 	runCmd.Stdout = os.Stdout
 	runCmd.Stderr = os.Stderr
 	command.runCmd = runCmd

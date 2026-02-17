@@ -26,12 +26,20 @@ type HelloWorldResponse struct {
  * `HelloWorldConfig` registers this handler as an API route.
  *
  * - `HttpMethod`: Specifies that this endpoint handles HTTP GET requests.
+ * - `Type`: Controls caching behavior — routes.DYNAMIC (default, no caching),
+ *   routes.STATIC (cached forever), or routes.ISR (cached with TTL).
+ * - `RevalidateInSec`: When Type is ISR, sets the TTL in seconds for cache entries.
  *
- * Since this is a pure API route, you don't need to define things like `Type` or `Middleware`.
- * All logic is handled directly in the handler function (`HelloWorld`).
+ * Example with ISR caching:
+ *   var MyConfig = routes.ApiRouteConfig{
+ *       HttpMethod:      routes.GET,
+ *       Type:            routes.ISR,
+ *       RevalidateInSec: 60,
+ *   }
  */
 var HelloWorldConfig = routes.ApiRouteConfig{
 	HttpMethod: routes.GET,
+	Type:       routes.DYNAMIC,
 }
 
 /**
@@ -49,7 +57,7 @@ func HelloWorld(w http.ResponseWriter, r *http.Request) {
 		Message: "Hello World from GOTH API ROUTE",
 	})
 
-	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 	w.Write(response)
 }

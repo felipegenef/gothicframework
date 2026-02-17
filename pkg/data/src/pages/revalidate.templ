@@ -17,12 +17,14 @@ type RevalidateProps = time.Time
 /**
  * `RevalidateConfig` defines the configuration for this ISR-enabled route.
  *
- * - `Type`: Set to `ISR` (Incremental Static Regeneration), allowing the page to be statically generated and then revalidated in the background every `RevalidateInSec` seconds.
+ * - `Type`: Set to `ISR` (Incremental Static Regeneration), allowing the page to be statically generated
+ *   and then revalidated in the background every `RevalidateInSec` seconds.
  * - `HttpMethod`: Sets the HTTP method this page responds to (in this case, GET).
  * - `Middleware`: Runs server-side to generate the props (`RevalidateProps`) for the page.
- *   - If running locally (`LOCAL_SERVE=true`), it simulates ISR with a simple time check.
- *   - In production, sets cache-control headers to enable proper CloudFront caching behavior.
  * - `RevalidateInSec`: Specifies the revalidation interval in seconds (every 10 seconds).
+ *
+ * Cache backend is configured in main.go via gothicRoutes.Setup().
+ * Default: CACHE_CONTROL_HEADERS in production, in-memory during development (hot-reload).
  */
 var RevalidateConfig = routes.RouteConfig[RevalidateProps]{
 	Type:          routes.ISR,
