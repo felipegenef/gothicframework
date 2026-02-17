@@ -24,7 +24,7 @@ type IndexPageProps = interface{}
  * `IndexConfig` describes how this specific page should behave within the Gothic routing system.
  *
  * Options include:
- * - `Type`: Controls how the page is rendered: 
+ * - `Type`: Controls how the page is rendered:
  *     - `STATIC` (default): Renders once and is cached.
  *     - `DYNAMIC`: Runs middleware on every request.
  *     - `ISR`: Regenerates at intervals you define (good for SEO + performance).
@@ -35,6 +35,12 @@ type IndexPageProps = interface{}
  *   - For `STATIC`, runs once on first request.
  *   - For `DYNAMIC`, runs on every request.
  *   - For `ISR`, runs at the interval specified by `RevalidateInSec`.
+ *
+ * Cache backend is configured in `main.go` via `gothicRoutes.Setup()`:
+ *   - `CacheStrategy`: `CACHE_CONTROL_HEADERS` (default), `IN_MEMORY`, `REDIS`, or `LOCAL_FILES`.
+ *   - `CacheConfig.RedisURL` / `CacheConfig.RedisPassword`: Required for `REDIS`.
+ *   - `CacheConfig.CacheFilesPath`: Directory for `LOCAL_FILES` (default: `.gothic-cache`).
+ *   - `CacheConfig.Compression` / `CacheConfig.CompressionMethod`: Enable gzip or brotli compression.
  */
 var IndexConfig = routes.RouteConfig[IndexPageProps]{
 	Type:       routes.STATIC,

@@ -7,7 +7,8 @@ import (
 	"os"
 
 	"{{.GoModName}}/src/routes"
-	"github.com/felipegenef/gothicframework/components"
+	gothicComponents "github.com/felipegenef/gothicframework/components"
+	gothicRoutes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
 
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"
@@ -16,31 +17,38 @@ import (
 
 func {{.MainServerFunctionName}} {
 	godotenv.Load()
-	var localServe = os.Getenv("LOCAL_SERVE")
-	var isLocal = len(localServe) > 0 && localServe == "true"
+
 	router := chi.NewMux()
 	router.Use(middleware.Logger)
 
 	/**
-	*                              Public assets folder
+	*                         Gothic App Configuration
 	*
-	* Here is where you serve your static files for your application like css files,
-	* javascript files, images, videos etc. If in AWS there is an origin configured for
-	* AWS Cloudfront that will serve those files from an s3 bucket and cache them in the edge.
-	* If you are running this program locally with the "make hot-reload" command, the files
-	* will be served from your local public folder. To control local file serving behaviour
-	* change the LOCAL_SERVE environment variable to "false" on your .env file
+	* Setup initializes caching, static file serving, and file-based routes.
 	*
+	* - CacheStrategy: The production cache backend.
+	*   Options: CACHE_CONTROL_HEADERS (default), IN_MEMORY, REDIS, LOCAL_FILES
+	*
+	* - LocalDevelopmentCache: The cache backend used during hot-reload development.
+	*   Options: IN_MEMORY (default), REDIS, LOCAL_FILES
+	*
+	* - ServeStaticFiles: Controls when public assets (css, js, images) are served from disk.
+	*   HOT_RELOAD_ONLY (default): Only during development. In production, AWS CloudFront
+	*     serves files from an S3 bucket origin.
+	*   ALL_ENVS: Serves files from disk in all environments. The public folder must be
+	*     present alongside the server binary (e.g., COPY into Docker container).
+	*
+	* - CacheConfig: Optional backend-specific settings (Redis URL, compression, etc.)
 	*
 	 */
-	if isLocal {
-		slog.Info("application serving local public folder")
-		router.Handle("/public/*", http.StripPrefix("/public/", http.FileServer(http.Dir("./public/"))))
-	}
+	gothicRoutes.Setup(router, gothicRoutes.AppConfig{
+		CacheStrategy:         gothicRoutes.CACHE_CONTROL_HEADERS,
+		LocalDevelopmentCache: gothicRoutes.IN_MEMORY,
+		ServeStaticFiles:      gothicRoutes.HOT_RELOAD_ONLY,
+	}, routes.RegisterFileBasedRoutes)
 
-	router.Group(routes.RegisterFileBasedRoutes)
 	/**
-	*                            📸 OptimizedImage Component
+	*                            OptimizedImage Component
 	*
 	* This component implements lazy loading with a smooth transition from a low-res placeholder
 	* to the full-resolution image — improving perceived performance and SEO.
