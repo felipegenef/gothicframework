@@ -245,84 +245,156 @@ SetStyle("preview-swatch", "backgroundColor", hex.Get())
 
 Context lets multiple WASM components share reactive state without prop drilling. Because each component is a separate WASM module with its own Go heap, values are serialized through a JavaScript store (`window.__gothic_context`) and broadcast via `CustomEvent`. The API mirrors the signal model — consumers get a regular `*Signal[T]` that works with `UseEffect` like any other signal.
 
-### `ContextKey[T any]`
+### Key factories
 
-A typed identifier that links a provider to its consumers. `T` encodes the value type — if provider and consumer use different `T` for the same `Name`, the decode function will produce garbage or panic. Declare the key as a literal in each `PageState` that uses it.
+Each factory returns a `ContextKey[T]` that carries its own codec — no encode/decode ever appears at the call site.
 
-```go
-ContextKey[int]{"page-pings"}
-ContextKey[string]{"theme"}
-ContextKey[bool]{"logged-in"}
-```
+**Primitives** — lightweight, no extra binary cost:
+
+| Factory | Type |
+|---------|------|
+| `BoolKey(name)` | `ContextKey[bool]` |
+| `StringKey(name)` | `ContextKey[string]` |
+| `IntKey(name)` | `ContextKey[int]` |
+| `Int8Key(name)` | `ContextKey[int8]` |
+| `Int16Key(name)` | `ContextKey[int16]` |
+| `Int32Key(name)` | `ContextKey[int32]` |
+| `Int64Key(name)` | `ContextKey[int64]` |
+| `UintKey(name)` | `ContextKey[uint]` |
+| `Uint8Key(name)` | `ContextKey[uint8]` |
+| `Uint16Key(name)` | `ContextKey[uint16]` |
+| `Uint32Key(name)` | `ContextKey[uint32]` |
+| `Uint64Key(name)` | `ContextKey[uint64]` |
+| `Float32Key(name)` | `ContextKey[float32]` |
+| `Float64Key(name)` | `ContextKey[float64]` |
+| `RuneKey(name)` | `ContextKey[rune]` (= int32) |
+| `ByteKey(name)` | `ContextKey[byte]` (= uint8) |
+
+**JSON** — structs, slices, maps — serialized as JSON:
+
+| Factory | Type |
+|---------|------|
+| `JsonKey[T any](name)` | `ContextKey[T]` |
+
+`T` must be JSON-serializable (exported fields, no channels or functions). `JsonKey` pulls in `encoding/json`, which adds ~140 KB gzip to any binary that calls it. Binaries using only primitive keys are unaffected.
+
+> **Future consideration — drop `encoding/json` from WASM binaries**
+>
+> The size cost comes from TinyGo having to compile Go's reflection engine to support generic marshal/unmarshal. A planned improvement would use `syscall/js` on the WASM side to delegate serialization to the browser's native `JSON.stringify`/`JSON.parse` (already present, zero extra binary cost), while keeping `encoding/json` only in the server-side stub (which does not affect WASM binary size). The missing piece is the Go struct ↔ `js.Value` bridge: `js.ValueOf` accepts `map[string]interface{}` but not arbitrary structs, so the conversion still needs either reflection or a small interface the user implements once per type (`GothicEncode() map[string]any` / `GothicDecode(js.Value)`). If that interface approach is acceptable, `JsonKey` binaries could drop back to the same ~21 KB as primitive-key binaries.
 
 ---
 
-### `ProvideContext[T any](key ContextKey[T], signal *Signal[T], encode func(T) string)`
+### `ProvideContext[T any](key ContextKey[T], signal *Signal[T])`
 
-Makes `signal` the source of truth for the named context. Uses auto-tracking internally — whenever `signal` changes, the new value is written to `window.__gothic_context[key.Name]` and broadcast via a `CustomEvent` so all consumers update reactively.
-
-Call this once in the provider's `PageState`, after the signal is created.
+Makes `signal` the source of truth for the named context. Uses auto-tracking internally — whenever `signal` changes the encoded value is written to `window.__gothic_context[key.Name]` and broadcast via `CustomEvent` so all consumers update reactively.
 
 ```go
+// Primitive — single int
 pings := UseState(0)
-ProvideContext(ContextKey[int]{"page-pings"}, pings, strconv.Itoa)
+ProvideContext(IntKey("page-pings"), pings)
+
+// Struct — multiple fields bundled together
+type PageCtx struct { Pings int; Label string }
+ctx := UseState(PageCtx{Pings: 0, Label: "ready"})
+ProvideContext(JsonKey[PageCtx]("page-ctx"), ctx)
 ```
 
 ---
 
-### `UseContext[T any](key ContextKey[T], initial T, decode func(string) T) *Signal[T]`
+### `UseContext[T any](key ContextKey[T], initial T) *Signal[T]`
 
-Subscribes to a named context. Reads the current value from `window.__gothic_context` at startup (so it picks up whatever the provider already set), then registers a JS event listener for future updates. Returns a local `*Signal[T]` — use it exactly like any `UseState` signal.
+Subscribes to the named context. Reads the current value from `window.__gothic_context` at startup (handles components that load after the provider already ran), then listens for future updates. Returns a local `*Signal[T]` — use as a dep in `UseEffect` like any other signal.
 
 ```go
-pings := UseContext(ContextKey[int]{"page-pings"}, 0, func(s string) int {
-    n, _ := strconv.Atoi(s)
-    return n
-})
+// Primitive
+pings := UseContext(IntKey("page-pings"), 0)
 UseEffect(func() {
     SetText("pm-count", strconv.Itoa(pings.Get()))
 }, pings)
+
+// Struct — PageCtx type must be visible in this module (see "Shared types" below)
+pageCtx := UseContext(JsonKey[PageCtx]("page-ctx"), PageCtx{})
+UseEffect(func() {
+    SetText("pm-label", pageCtx.Get().Label)
+}, pageCtx)
 ```
 
 ---
 
-### Encode / decode patterns
+### Shared types — declaring structs once (Path A and Path B)
 
-| Type | encode | decode |
-|------|--------|--------|
-| `int` | `strconv.Itoa` | `func(s string) int { n, _ := strconv.Atoi(s); return n }` |
-| `string` | `func(s string) string { return s }` | `func(s string) string { return s }` |
-| `bool` | `strconv.FormatBool` | `func(s string) bool { b, _ := strconv.ParseBool(s); return b }` |
-| `float64` | `func(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }` | `func(s string) float64 { f, _ := strconv.ParseFloat(s, 64); return f }` |
+For primitive contexts (`IntKey`, `StringKey`, etc.) there is nothing to share — just use the same factory call in provider and consumer.
 
----
+For struct contexts (`JsonKey[T]`) the struct type must be visible in both the provider and consumer modules. There are two ways to achieve this:
 
-### Multiple fields
+#### Path A — inline structs (no extra setup)
 
-Each field that needs independent reactivity gets its own `ContextKey`. Consumers only subscribe to the keys they care about — a change to `"theme"` won't re-run effects that only depend on `"page-pings"`.
+Define the same struct inside each `PageState` body that uses it. Go's `encoding/json` is shape-based — as long as field names and `json:` tags match, round-trips work regardless of Go type identity.
 
 ```go
-// Provider (page PageState):
-pings  := UseState(0)
-theme  := UseState("dark")
-ProvideContext(ContextKey[int]{"page-pings"}, pings, strconv.Itoa)
-ProvideContext(ContextKey[string]{"theme"}, theme, func(s string) string { return s })
+// In page PageState — provider:
+type PageCtx struct{ Pings int `json:"pings"`; Label string `json:"label"` }
+ctx := UseState(PageCtx{})
+ProvideContext(JsonKey[PageCtx]("page-ctx"), ctx)
 
-// Consumer A — only cares about pings:
-pings := UseContext(ContextKey[int]{"page-pings"}, 0, func(s string) int {
-    n, _ := strconv.Atoi(s)
-    return n
-})
-
-// Consumer B — only cares about theme:
-theme := UseContext(ContextKey[string]{"theme"}, "dark", func(s string) string { return s })
+// In component PageState — consumer (identical struct definition):
+type PageCtx struct{ Pings int `json:"pings"`; Label string `json:"label"` }
+pageCtx := UseContext(JsonKey[PageCtx]("page-ctx"), PageCtx{})
 ```
+
+Best for: small structs that are only used by one or two modules.
+
+#### Path B — shared `src/wasm/` directory (single source of truth)
+
+Create `src/wasm/contexts.go` with `package gothicwasm`. The CLI automatically bundles every `.go` file in this directory into every WASM binary. The package declaration is rewritten to `package main` at compile time, so all exported types are directly available in `PageState` bodies without any import.
+
+```
+src/
+  wasm/
+    contexts.go   ← type definitions, package gothicwasm, no imports
+```
+
+```go
+// src/wasm/contexts.go
+package gothicwasm
+
+// Rules:
+//   - package must be named gothicwasm
+//   - no imports — pure type definitions only
+//   - all fields exported, JSON-serializable
+
+type PageCtx struct {
+    Pings int    `json:"pings"`
+    Label string `json:"label"`
+}
+```
+
+For server-side compilation (Go, not TinyGo), templ files import the same package normally:
+
+```go
+import . "yourmodule/src/wasm"  // dot import — PageCtx available without prefix
+```
+
+Then in any `PageState` body (WASM or server):
+```go
+// Works in both — no import line needed in PageState body itself
+ctx := UseState(PageCtx{Pings: 0, Label: "ready"})
+ProvideContext(JsonKey[PageCtx]("page-ctx"), ctx)
+```
+
+Best for: structs used across many components, or when you want a single canonical definition.
+
+**Rules for `src/wasm/` files:**
+- Package name must be `gothicwasm`
+- No imports of any kind — only plain Go type definitions
+- All struct fields must be exported and JSON-serializable
+- Build tags are not needed — the CLI includes these files only during WASM compilation
 
 ---
 
 ### How it works
 
-Each WASM module runs in its own Go heap — `*Signal[T]` pointers cannot cross module boundaries. `ProvideContext` writes serialized values to `window.__gothic_context[name]` and fires a `CustomEvent("gothic:context:name")` on `document`. `UseContext` reads the store at startup for the initial value, then listens for that event to call `.Set()` on the local signal. From the consumer's perspective it is an ordinary signal.
+Each WASM module runs in its own Go heap — `*Signal[T]` pointers cannot cross module boundaries. `ProvideContext` writes the serialized value to `window.__gothic_context[name]` and fires a `CustomEvent("gothic:context:name")` on `document`. `UseContext` reads the store at startup for the initial value, then listens for that event and calls `.Set()` on the local signal. From the consumer's perspective it is an ordinary signal — subscribe to it in `UseEffect`, read it with `.Get()`.
 
 ---
 

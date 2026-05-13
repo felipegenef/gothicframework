@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+
 	"strings"
 	"sync"
 	"time"
@@ -325,6 +326,7 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	}
 
 	mainPath := filepath.Join(genDir, "main.go")
+	bundleContextFiles(genDir)
 	if err := writeWasmMain(page.SourceFile, page.FuncBody, page.Imports, mainPath); err != nil {
 		return err
 	}
@@ -445,6 +447,29 @@ func (h *WasmHelper) CopyWasmExec(destDir string) error {
 }
 
 // ─── Code generation helpers ──────────────────────────────────────────────────
+
+// bundleContextFiles copies *.go files from src/wasm/ directly into genDir as
+// package main, so their exported types are part of the same compilation unit
+// as the generated main.go — no import needed, no "imported and not used" risk.
+func bundleContextFiles(genDir string) {
+	entries, err := os.ReadDir("src/wasm")
+	if err != nil {
+		return
+	}
+	pkgRe := regexp.MustCompile(`(?m)^package\s+\S+`)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("src/wasm", e.Name()))
+		if err != nil {
+			continue
+		}
+		// Rewrite package declaration to package main so it joins the generated binary.
+		rewritten := pkgRe.ReplaceAllLiteral(data, []byte("package main"))
+		_ = os.WriteFile(filepath.Join(genDir, "ctx_"+e.Name()), rewritten, 0644)
+	}
+}
 
 func writeWasmMain(src, body string, stdImports []string, dest string) error {
 	var sb strings.Builder
