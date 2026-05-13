@@ -25,19 +25,14 @@ func (s *Signal[T]) Get() T { return s.value }
 func (s *Signal[T]) Set(v T) { s.value = v }
 
 // UseEffect runs fn immediately (server-side no-op — fn is not called).
-func UseEffect(fn func()) *Effect { return &Effect{} }
+// Pass deps to re-run fn when those signals change; pass none to run once.
+func UseEffect(fn func(), deps ...any) *Effect { return &Effect{} }
 
 // UseEffectWithCleanup is like UseEffect with a cleanup function.
-func UseEffectWithCleanup(fn func() func()) *Effect { return &Effect{} }
+func UseEffectWithCleanup(fn func() func(), deps ...any) *Effect { return &Effect{} }
 
 // Stop deactivates an effect (no-op server-side).
 func (e *Effect) Stop() {}
-
-// Computed creates a derived read-only signal.
-func Computed[T any](fn func() T) *Signal[T] { return &Signal[T]{value: fn()} }
-
-// Memo is an alias for Computed.
-func Memo[T any](fn func() T) *Signal[T] { return &Signal[T]{value: fn()} }
 
 // Batch defers effect re-executions (server-side runs fn immediately).
 func Batch(fn func()) { fn() }
@@ -59,3 +54,18 @@ func SetStyle(id, property, value string) {}
 func Register(name string, fn func())            {}
 func RegisterInput(name string, fn func(string)) {}
 func RegisterBool(name string, fn func(bool))    {}
+
+// Context — no-ops on the server.
+
+// ContextKey is a typed identifier for a shared context value.
+// T encodes the type — provider and consumer must use the same T and Name.
+type ContextKey[T any] struct{ Name string }
+
+// ProvideContext makes signal the source of truth for a named context.
+func ProvideContext[T any](key ContextKey[T], signal *Signal[T], encode func(T) string) {}
+
+// UseContext subscribes to a named context and returns a local signal mirroring
+// the provider's value.
+func UseContext[T any](key ContextKey[T], initial T, decode func(string) T) *Signal[T] {
+	return &Signal[T]{value: initial}
+}

@@ -1,4 +1,6 @@
 (function() {
+    window.__gothic_dev = true;
+
     let src = window.gothicframework_reloadSrc
         || new EventSource("/_gothicframework/reload/events");
 

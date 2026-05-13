@@ -5,6 +5,7 @@ package runtime
 var currentEffect *Effect
 
 type dependency interface {
+	addEffect(e *Effect)
 	removeEffect(e *Effect)
 }
 
@@ -55,6 +56,15 @@ func (s *Signal[T]) notifySubscribers() {
 	for _, e := range effects {
 		e.run()
 	}
+}
+
+func (s *Signal[T]) addEffect(e *Effect) {
+	for _, existing := range s.effects {
+		if existing == e {
+			return
+		}
+	}
+	s.effects = append(s.effects, e)
 }
 
 func (s *Signal[T]) removeEffect(e *Effect) {

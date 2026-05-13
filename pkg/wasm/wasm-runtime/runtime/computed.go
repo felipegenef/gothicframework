@@ -29,26 +29,3 @@ func Batch(fn func()) {
 	}
 }
 
-func Computed[T any](fn func() T) *Signal[T] {
-	s := &Signal[T]{}
-	var computeEffect *Effect
-	computeEffect = &Effect{active: true}
-	computeEffect.fn = func() {
-		s.value = fn()
-		subs := make([]*Effect, 0, len(s.effects))
-		for _, sub := range s.effects {
-			if sub != computeEffect {
-				subs = append(subs, sub)
-			}
-		}
-		for _, sub := range subs {
-			sub.run()
-		}
-	}
-	computeEffect.run()
-	return s
-}
-
-func Memo[T any](fn func() T) *Signal[T] {
-	return Computed(fn)
-}
