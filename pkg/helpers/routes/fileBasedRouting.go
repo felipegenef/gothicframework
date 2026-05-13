@@ -428,8 +428,8 @@ type FileBasedRouteHelper struct {
 
 func NewFileBasedRouteHelper() FileBasedRouteHelper {
 	return FileBasedRouteHelper{
-		OutputFile:              "./src/routes/autoGenRoutes.go",
-		TemplateFile:            "./.gothicCli/templates/autoGenRoutes.go",
+		OutputFile:              "./src/routes/routes_gen.go",
+		TemplateFile:            "./.gothicCli/templates/routes_gen.go",
 		ApiRoutesFolder:         "./src/api",
 		ComponentRoutesFolder:   "./src/components",
 		PageRoutesFolder:        "./src/pages",

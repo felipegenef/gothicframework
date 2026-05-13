@@ -7,6 +7,14 @@ import (
 	"strconv"
 )
 
+// GothicSharedContext is a zero-size marker type embedded in context structs.
+type GothicSharedContext struct{}
+
+func (GothicSharedContext) isGothicSharedContext() {}
+
+// SharedContext is the compile-time constraint for context types.
+type SharedContext interface{ isGothicSharedContext() }
+
 // ContextKey is a typed context identifier that carries its own codec.
 type ContextKey[T any] struct {
 	Name   string
@@ -157,8 +165,42 @@ func JsonKey[T any](name string) ContextKey[T] {
 	}
 }
 
-func ProvideContext[T any](key ContextKey[T], signal *Signal[T]) {}
+func CustomKey[T any](name string, encode func(T) string, decode func(string) T) ContextKey[T] {
+	return ContextKey[T]{Name: name, encode: encode, decode: decode}
+}
 
-func UseContext[T any](key ContextKey[T], initial T) *Signal[T] {
+func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decoder) T) ContextKey[T] {
+	return ContextKey[T]{
+		Name: name,
+		encode: func(v T) string {
+			e := NewEncoder(64)
+			encode(v, e)
+			return hexEncode(e.Buf)
+		},
+		decode: func(s string) T {
+			d := &Decoder{Buf: hexDecode(s)}
+			return decode(d)
+		},
+	}
+}
+
+// AutoKey is rewritten to BinaryKey by the CLI before TinyGo compiles.
+// This stub exists so server-side code compiles without error.
+func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name} }
+
+
+func UseContext[T SharedContext](key ContextKey[T], initial T) *Signal[T] {
 	return &Signal[T]{value: initial}
+}
+
+// SharedSignal server-side stub — no-op, same API as the WASM implementation.
+type SharedSignal[T any] struct{ inner *Signal[T] }
+
+func (s *SharedSignal[T]) Get() T                { return s.inner.value }
+func (s *SharedSignal[T]) Set(v T)               { s.inner.value = v }
+func (s *SharedSignal[T]) addEffect(e *Effect)   { s.inner.addEffect(e) }
+func (s *SharedSignal[T]) removeEffect(e *Effect) { s.inner.removeEffect(e) }
+
+func UseSharedState[T SharedContext](key ContextKey[T], initial T) *SharedSignal[T] {
+	return &SharedSignal[T]{inner: &Signal[T]{value: initial}}
 }

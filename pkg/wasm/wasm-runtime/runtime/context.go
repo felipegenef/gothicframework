@@ -8,6 +8,16 @@ import (
 	"syscall/js"
 )
 
+// GothicSharedContext is a zero-size marker type embedded in context structs.
+// The CLI reads the name tag on this field to derive the context key name.
+// Embedding it also satisfies the SharedContext constraint.
+type GothicSharedContext struct{}
+
+func (GothicSharedContext) isGothicSharedContext() {}
+
+// SharedContext is the compile-time constraint for context types.
+type SharedContext interface{ isGothicSharedContext() }
+
 // ContextKey is a typed context identifier that carries its own codec.
 // T encodes the value type — provider and consumer must use the same key.
 // Construct via the factory functions (IntKey, StringKey, JsonKey, etc.),
@@ -178,30 +188,14 @@ func ensureContextStore() js.Value {
 	return store
 }
 
-// ── ProvideContext / UseContext ───────────────────────────────────────────────
-
-// ProvideContext makes signal the source of truth for the named context.
-// Whenever signal changes the encoded value is written to window.__gothic_context
-// and broadcast via CustomEvent so all UseContext consumers update reactively.
-func ProvideContext[T any](key ContextKey[T], signal *Signal[T]) {
-	e := &Effect{active: true} // explicitDeps:false → auto-tracks signal via Get()
-	e.fn = func() {
-		encoded := key.encode(signal.Get())
-		ensureContextStore().Set(key.Name, encoded)
-		init := js.Global().Get("Object").New()
-		init.Set("detail", encoded)
-		event := js.Global().Get("CustomEvent").New("gothic:context:"+key.Name, init)
-		js.Global().Get("document").Call("dispatchEvent", event)
-	}
-	e.run()
-}
+// ── UseContext / UseSharedState ───────────────────────────────────────────────
 
 // UseContext subscribes to the named context and returns a local *Signal[T]
 // that mirrors the provider's value. Reads the current value from the JS store
 // at startup (handles components that load after the provider already ran), then
 // listens for CustomEvents to update reactively. Use as a dep in UseEffect like
 // any other signal.
-func UseContext[T any](key ContextKey[T], initial T) *Signal[T] {
+func UseContext[T SharedContext](key ContextKey[T], initial T) *Signal[T] {
 	current := initial
 	v := ensureContextStore().Get(key.Name)
 	if !v.IsUndefined() && !v.IsNull() {
@@ -223,4 +217,123 @@ func UseContext[T any](key ContextKey[T], initial T) *Signal[T] {
 	js.Global().Get("document").Call("addEventListener", "gothic:context:"+key.Name, listener)
 
 	return s
+}
+
+// ── SharedSignal / UseSharedState ─────────────────────────────────────────────
+
+// SharedSignal is a reactive signal whose Set broadcasts to all WASM modules
+// sharing the same ContextKey. Any module calling UseSharedState with the same
+// key can both read and write the value — there is no separate provider/consumer.
+type SharedSignal[T any] struct {
+	inner *Signal[T]
+	key   ContextKey[T]
+}
+
+func (s *SharedSignal[T]) Get() T { return s.inner.Get() }
+
+// Set updates the local value, notifies local effects, writes the new value to
+// the JS context store, and dispatches a CustomEvent so every other WASM module
+// that called UseSharedState with the same key receives the update.
+func (s *SharedSignal[T]) Set(v T) {
+	s.inner.value = v
+	s.inner.notifyAll()
+	encoded := s.key.encode(v)
+	ensureContextStore().Set(s.key.Name, encoded)
+	init := js.Global().Get("Object").New()
+	init.Set("detail", encoded)
+	event := js.Global().Get("CustomEvent").New("gothic:context:"+s.key.Name, init)
+	js.Global().Get("document").Call("dispatchEvent", event)
+}
+
+// Implements dependency so *SharedSignal[T] works as a UseEffect dep.
+func (s *SharedSignal[T]) addEffect(e *Effect)    { s.inner.addEffect(e) }
+func (s *SharedSignal[T]) removeEffect(e *Effect) { s.inner.removeEffect(e) }
+
+// UseSharedState subscribes to the named context and returns a *SharedSignal[T].
+// Unlike UseContext, calling Set on the returned signal propagates the new value
+// to all other WASM modules sharing the same key.
+// The module that calls Set first becomes the effective source of truth for that update.
+//
+// Example (any module — page or component):
+//
+//	cart := UseSharedState(CartItemsKey, []CartItem{})
+//
+//	UseEffect(func() {
+//	    SetText("cart-count", strconv.Itoa(len(cart.Get())))
+//	}, cart)
+//
+//	Register("clearCart", func() {
+//	    cart.Set([]CartItem{})  // propagates to every other module instantly
+//	})
+func UseSharedState[T SharedContext](key ContextKey[T], initial T) *SharedSignal[T] {
+	current := initial
+	v := ensureContextStore().Get(key.Name)
+	if !v.IsUndefined() && !v.IsNull() {
+		current = key.decode(v.String())
+	}
+
+	ss := &SharedSignal[T]{
+		inner: &Signal[T]{value: current},
+		key:   key,
+	}
+
+	// Listen for writes from other modules.
+	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) > 0 {
+			detail := args[0].Get("detail")
+			if !detail.IsUndefined() && !detail.IsNull() {
+				decoded := key.decode(detail.String())
+				// Update local value and notify local effects without re-broadcasting.
+				ss.inner.value = decoded
+				ss.inner.notifyAll()
+			}
+		}
+		return nil
+	})
+	keep = append(keep, listener)
+	js.Global().Get("document").Call("addEventListener", "gothic:context:"+key.Name, listener)
+
+	return ss
+}
+
+// AutoKey is rewritten to BinaryKey by the CLI before TinyGo compiles.
+// This stub exists so server-side code compiles; WASM code never calls it directly.
+func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name} }
+
+// CustomKey returns a ContextKey with user-supplied encode/decode functions.
+// Use this to avoid the encoding/json dependency when JsonKey's binary size is a concern.
+func CustomKey[T any](name string, encode func(T) string, decode func(string) T) ContextKey[T] {
+	return ContextKey[T]{Name: name, encode: encode, decode: decode}
+}
+
+// BinaryKey returns a ContextKey that serializes T using a compact little-endian binary
+// codec instead of JSON. No reflection, no encoding/json — just typed Encoder/Decoder calls.
+// The encode function writes fields onto e; the decode function reads them back and returns T.
+// Field order must match between encode and decode.
+//
+// Example:
+//
+//	BinaryKey[PageCtx]("page-ctx",
+//	    func(v PageCtx, e *Encoder) {
+//	        e.I32(int32(v.Pings))
+//	        e.String(v.Label)
+//	        e.String(v.Theme)
+//	    },
+//	    func(d *Decoder) PageCtx {
+//	        return PageCtx{Pings: int(d.I32()), Label: d.String(), Theme: d.String()}
+//	    },
+//	)
+func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decoder) T) ContextKey[T] {
+	return ContextKey[T]{
+		Name: name,
+		encode: func(v T) string {
+			e := NewEncoder(64)
+			encode(v, e)
+			return hexEncode(e.Buf)
+		},
+		decode: func(s string) T {
+			d := &Decoder{Buf: hexDecode(s)}
+			return decode(d)
+		},
+	}
 }

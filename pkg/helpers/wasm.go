@@ -8,6 +8,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"os"
@@ -15,7 +18,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-
 	"strings"
 	"sync"
 	"time"
@@ -326,8 +328,8 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	}
 
 	mainPath := filepath.Join(genDir, "main.go")
-	bundleContextFiles(genDir)
-	if err := writeWasmMain(page.SourceFile, page.FuncBody, page.Imports, mainPath); err != nil {
+	ctxSnippets, codecSrc := collectContextSnippets()
+	if err := writeWasmMain(page.SourceFile, page.FuncBody, page.Imports, ctxSnippets, codecSrc, mainPath); err != nil {
 		return err
 	}
 
@@ -448,30 +450,389 @@ func (h *WasmHelper) CopyWasmExec(destDir string) error {
 
 // ─── Code generation helpers ──────────────────────────────────────────────────
 
-// bundleContextFiles copies *.go files from src/wasm/ directly into genDir as
-// package main, so their exported types are part of the same compilation unit
-// as the generated main.go — no import needed, no "imported and not used" risk.
-func bundleContextFiles(genDir string) {
-	entries, err := os.ReadDir("src/wasm")
+// ── Regexps ──────────────────────────────────────────────────────────────────
+
+// importPathRe extracts the import path from a quoted import line.
+var importPathRe = regexp.MustCompile(`"([^"]+)"`)
+
+// importBlockRe matches a full import block or single-line import statement.
+var importBlockRe = regexp.MustCompile(`(?s)import\s*\([^)]*\)|import\s+(?:\.\s+|[\w]+\s+)?"[^"]+"`)
+
+// pkgDeclRe matches the package declaration line.
+var pkgDeclRe = regexp.MustCompile(`(?m)^package\s+\S+.*\n?`)
+
+// autoKeyRe matches AutoKey[T]("name") or AutoKey[[]T]("name").
+var autoKeyRe = regexp.MustCompile(`AutoKey\[(\[\][\w]+|[\w]+)\]\("([^"]+)"\)`)
+
+// ── Struct parsing ────────────────────────────────────────────────────────────
+
+type structInfo struct {
+	Name    string
+	KeyName string // value of gothic tag on embedded GothicSharedContext field; empty if not present
+	Fields  []fieldInfo
+}
+
+type fieldInfo struct {
+	Name      string
+	Type      string // Go type string: "int", "string", "[]CartItem", etc.
+	GothicTag string // value of `gothic:"..."` tag
+}
+
+func parseStructsFromSource(src string) []structInfo {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", src, parser.ParseComments)
 	if err != nil {
-		return
+		return nil
 	}
-	pkgRe := regexp.MustCompile(`(?m)^package\s+\S+`)
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+	var structs []structInfo
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join("src/wasm", e.Name()))
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			si := structInfo{Name: ts.Name.Name}
+			for _, field := range st.Fields.List {
+				typ := astTypeString(field.Type)
+				tag := ""
+				if field.Tag != nil {
+					tag = parseGothicTag(strings.Trim(field.Tag.Value, "`"))
+				}
+				// Detect embedded GothicSharedContext — extract key name from name: tag, skip as data field.
+				if len(field.Names) == 0 && typ == "GothicSharedContext" {
+					if field.Tag != nil {
+						si.KeyName = parseNameTag(strings.Trim(field.Tag.Value, "`"))
+					}
+					continue
+				}
+				for _, name := range field.Names {
+					si.Fields = append(si.Fields, fieldInfo{Name: name.Name, Type: typ, GothicTag: tag})
+				}
+			}
+			structs = append(structs, si)
+		}
+	}
+	return structs
+}
+
+func astTypeString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name
+	case *ast.ArrayType:
+		if e.Len == nil {
+			return "[]" + astTypeString(e.Elt)
+		}
+		return astTypeString(e.Elt)
+	case *ast.StarExpr:
+		return "*" + astTypeString(e.X)
+	case *ast.SelectorExpr:
+		return astTypeString(e.X) + "." + e.Sel.Name
+	}
+	return ""
+}
+
+func parseGothicTag(tag string) string {
+	for _, part := range strings.Fields(tag) {
+		if strings.HasPrefix(part, `gothic:"`) {
+			return strings.Trim(strings.TrimPrefix(part, "gothic:"), `"`)
+		}
+	}
+	return ""
+}
+
+func parseNameTag(tag string) string {
+	for _, part := range strings.Fields(tag) {
+		if strings.HasPrefix(part, `name:"`) {
+			return strings.Trim(strings.TrimPrefix(part, "name:"), `"`)
+		}
+	}
+	return ""
+}
+
+// ── Codec generation ──────────────────────────────────────────────────────────
+
+// codecLines returns the encoder and decoder statements for a single struct field.
+// structNames is the set of struct types defined in src/context/ (used for nested/slice detection).
+func codecLines(fi fieldInfo, structNames map[string]bool) (enc, dec string, ok bool) {
+	n := fi.Name
+	typ := fi.Type
+	tag := fi.GothicTag
+
+	if tag == "skip" {
+		return "", "", false
+	}
+
+	// Tag overrides the default wire type.
+	if tag != "" {
+		switch tag {
+		case "i32":
+			return fmt.Sprintf("e.I32(int32(v.%s))", n), fmt.Sprintf("v.%s = int(d.I32())", n), true
+		case "i64":
+			return fmt.Sprintf("e.I64(int64(v.%s))", n), fmt.Sprintf("v.%s = int(d.I64())", n), true
+		case "u32":
+			return fmt.Sprintf("e.U32(uint32(v.%s))", n), fmt.Sprintf("v.%s = uint(d.U32())", n), true
+		case "u64":
+			return fmt.Sprintf("e.U64(uint64(v.%s))", n), fmt.Sprintf("v.%s = uint(d.U64())", n), true
+		}
+	}
+
+	switch typ {
+	case "bool":
+		return fmt.Sprintf("e.Bool(v.%s)", n), fmt.Sprintf("v.%s = d.Bool()", n), true
+	case "string":
+		return fmt.Sprintf("e.String(v.%s)", n), fmt.Sprintf("v.%s = d.String()", n), true
+	case "[]byte":
+		return fmt.Sprintf("e.Bytes(v.%s)", n), fmt.Sprintf("v.%s = d.Bytes()", n), true
+	case "int":
+		// Default int to I64 (safe on all platforms). Use gothic:"i32" to override.
+		return fmt.Sprintf("e.I64(int64(v.%s))", n), fmt.Sprintf("v.%s = int(d.I64())", n), true
+	case "int8", "int16":
+		return fmt.Sprintf("e.I32(int32(v.%s))", n), fmt.Sprintf("v.%s = %s(d.I32())", n, typ), true
+	case "int32", "rune":
+		return fmt.Sprintf("e.I32(v.%s)", n), fmt.Sprintf("v.%s = d.I32()", n), true
+	case "int64":
+		return fmt.Sprintf("e.I64(v.%s)", n), fmt.Sprintf("v.%s = d.I64()", n), true
+	case "uint8", "byte":
+		return fmt.Sprintf("e.U8(v.%s)", n), fmt.Sprintf("v.%s = d.U8()", n), true
+	case "uint16":
+		return fmt.Sprintf("e.U16(v.%s)", n), fmt.Sprintf("v.%s = d.U16()", n), true
+	case "uint32":
+		return fmt.Sprintf("e.U32(v.%s)", n), fmt.Sprintf("v.%s = d.U32()", n), true
+	case "uint", "uint64":
+		return fmt.Sprintf("e.U64(uint64(v.%s))", n), fmt.Sprintf("v.%s = %s(d.U64())", n, typ), true
+	case "float32":
+		return fmt.Sprintf("e.F32(v.%s)", n), fmt.Sprintf("v.%s = d.F32()", n), true
+	case "float64":
+		return fmt.Sprintf("e.F64(v.%s)", n), fmt.Sprintf("v.%s = d.F64()", n), true
+	}
+
+	// Slice types.
+	if strings.HasPrefix(typ, "[]") {
+		elem := typ[2:]
+		return sliceCodecLines(n, elem, structNames)
+	}
+
+	// Nested struct defined in src/context/.
+	if structNames[typ] {
+		return fmt.Sprintf("_encode_%s(v.%s, e)", typ, n),
+			fmt.Sprintf("v.%s = _decode_%s(d)", n, typ), true
+	}
+
+	return "", "", false // unknown type — skip silently
+}
+
+func sliceCodecLines(fieldName, elem string, structNames map[string]bool) (enc, dec string, ok bool) {
+	// Slice of known struct.
+	if structNames[elem] {
+		enc = fmt.Sprintf(
+			"{ e.U32(uint32(len(v.%s))); for _, _item := range v.%s { _encode_%s(_item, e) } }",
+			fieldName, fieldName, elem)
+		dec = fmt.Sprintf(
+			"{ _n := int(d.U32()); v.%s = make([]%s, _n); for _i := range v.%s { v.%s[_i] = _decode_%s(d) } }",
+			fieldName, elem, fieldName, fieldName, elem)
+		return enc, dec, true
+	}
+	// Slice of primitive string.
+	if elem == "string" {
+		enc = fmt.Sprintf(
+			"{ e.U32(uint32(len(v.%s))); for _, _s := range v.%s { e.String(_s) } }",
+			fieldName, fieldName)
+		dec = fmt.Sprintf(
+			"{ _n := int(d.U32()); v.%s = make([]string, _n); for _i := range v.%s { v.%s[_i] = d.String() } }",
+			fieldName, fieldName, fieldName)
+		return enc, dec, true
+	}
+	return "", "", false
+}
+
+// generateCodecs produces _encode_T / _decode_T functions for every struct,
+// plus top-level slice helpers used by AutoKey[[]T].
+func generateCodecs(structs []structInfo) string {
+	if len(structs) == 0 {
+		return ""
+	}
+	names := make(map[string]bool, len(structs))
+	for _, s := range structs {
+		names[s.Name] = true
+	}
+
+	var sb strings.Builder
+	sb.WriteString("// ── auto-generated codecs (do not edit) ─────────────────────────────────\n\n")
+
+	for _, s := range structs {
+		// _encode_T
+		sb.WriteString(fmt.Sprintf("func _encode_%s(v %s, e *Encoder) {\n", s.Name, s.Name))
+		for _, f := range s.Fields {
+			enc, _, ok := codecLines(f, names)
+			if ok {
+				sb.WriteString("\t" + enc + "\n")
+			}
+		}
+		sb.WriteString("}\n\n")
+
+		// _decode_T
+		sb.WriteString(fmt.Sprintf("func _decode_%s(d *Decoder) %s {\n", s.Name, s.Name))
+		sb.WriteString(fmt.Sprintf("\tvar v %s\n", s.Name))
+		for _, f := range s.Fields {
+			_, dec, ok := codecLines(f, names)
+			if ok {
+				sb.WriteString("\t" + dec + "\n")
+			}
+		}
+		sb.WriteString("\treturn v\n}\n\n")
+
+		// Top-level slice helpers so AutoKey[[]T] works.
+		sb.WriteString(fmt.Sprintf("func _encode_slice%s(v []%s, e *Encoder) {\n", s.Name, s.Name))
+		sb.WriteString(fmt.Sprintf("\te.U32(uint32(len(v)))\n"))
+		sb.WriteString(fmt.Sprintf("\tfor _, _item := range v { _encode_%s(_item, e) }\n", s.Name))
+		sb.WriteString("}\n\n")
+
+		sb.WriteString(fmt.Sprintf("func _decode_slice%s(d *Decoder) []%s {\n", s.Name, s.Name))
+		sb.WriteString(fmt.Sprintf("\t_n := int(d.U32())\n"))
+		sb.WriteString(fmt.Sprintf("\tv := make([]%s, _n)\n", s.Name))
+		sb.WriteString(fmt.Sprintf("\tfor _i := range v { v[_i] = _decode_%s(d) }\n", s.Name))
+		sb.WriteString("\treturn v\n}\n\n")
+
+	}
+
+	return sb.String()
+}
+
+// rewriteAutoKeys replaces AutoKey[T]("name") → BinaryKey[T]("name", _encode_T, _decode_T)
+// and AutoKey[[]T]("name") → BinaryKey[[]T]("name", _encode_sliceT, _decode_sliceT).
+func rewriteAutoKeys(src string) string {
+	return autoKeyRe.ReplaceAllStringFunc(src, func(match string) string {
+		m := autoKeyRe.FindStringSubmatch(match)
+		typ, name := m[1], m[2]
+		var encFn, decFn string
+		if strings.HasPrefix(typ, "[]") {
+			elem := typ[2:]
+			encFn = "_encode_slice" + elem
+			decFn = "_decode_slice" + elem
+		} else {
+			encFn = "_encode_" + typ
+			decFn = "_decode_" + typ
+		}
+		return fmt.Sprintf(`BinaryKey[%s]("%s", %s, %s)`, typ, name, encFn, decFn)
+	})
+}
+
+// ── collectContextSnippets / writeWasmMain ────────────────────────────────────
+
+// collectContextSnippets reads src/context/*.go, parses struct definitions,
+// generates binary codecs for them, rewrites AutoKey calls, and returns
+// the inlinable snippets plus the generated codec source.
+func collectContextSnippets() (snippets []string, codecSrc string) {
+	entries, err := os.ReadDir("src/context")
+	if err != nil {
+		return nil, ""
+	}
+
+	type rawFile struct{ name, src string }
+	var files []rawFile
+	var allStructs []structInfo
+	pkgName := "gothicwasm"
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == "context_gen.go" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("src/context", e.Name()))
 		if err != nil {
 			continue
 		}
-		// Rewrite package declaration to package main so it joins the generated binary.
-		rewritten := pkgRe.ReplaceAllLiteral(data, []byte("package main"))
-		_ = os.WriteFile(filepath.Join(genDir, "ctx_"+e.Name()), rewritten, 0644)
+		src := string(data)
+		// Detect package name from first parseable file.
+		if fset := token.NewFileSet(); pkgName == "gothicwasm" {
+			if pf, err := parser.ParseFile(fset, "", src, 0); err == nil && pf.Name != nil {
+				pkgName = pf.Name.Name
+			}
+		}
+		allStructs = append(allStructs, parseStructsFromSource(src)...)
+		files = append(files, rawFile{e.Name(), src})
 	}
+
+	// Validate: every struct must embed GothicSharedContext with a non-empty key name,
+	// and key names must be unique across all context files.
+	seenKeys := map[string]string{} // key name → struct name
+	for _, s := range allStructs {
+		if s.KeyName == "" {
+			fmt.Fprintf(os.Stderr,
+				"error: %s in src/context/ is missing GothicSharedContext embedding.\n"+
+					"  All context structs must embed GothicSharedContext with a name tag:\n"+
+					"      type %s struct {\n          GothicSharedContext `name:\"your-key-name\"`\n          ...\n      }\n",
+				s.Name, s.Name)
+			os.Exit(1)
+		}
+		if prev, exists := seenKeys[s.KeyName]; exists {
+			fmt.Fprintf(os.Stderr,
+				"error: duplicate context key name %q — used by both %s and %s in src/context/.\n"+
+					"  Each context struct must have a unique gothic key name.\n",
+				s.KeyName, prev, s.Name)
+			os.Exit(1)
+		}
+		seenKeys[s.KeyName] = s.Name
+	}
+
+	keyVars := generateKeyVars(allStructs)
+	codecSrc = generateCodecs(allStructs) + keyVars
+
+	// Write server-side stubs so templ/Go server code compiles without the WASM-only main.go.
+	writeContextKeyStubs(allStructs, pkgName, keyVars)
+
+	for _, f := range files {
+		src := f.src
+		src = pkgDeclRe.ReplaceAllLiteralString(src, "")
+		src = importBlockRe.ReplaceAllLiteralString(src, "")
+		src = rewriteAutoKeys(src)
+		src = strings.TrimSpace(src)
+		if src != "" {
+			snippets = append(snippets, "// --- from src/context/"+f.name+" ---\n"+src)
+		}
+	}
+	return snippets, codecSrc
 }
 
-func writeWasmMain(src, body string, stdImports []string, dest string) error {
+// generateKeyVars produces an exported ContextKey var for each struct that has a key name.
+func generateKeyVars(structs []structInfo) string {
+	var sb strings.Builder
+	for _, s := range structs {
+		if s.KeyName == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("var %sKey = BinaryKey[%s](\"%s\", _encode_%s, _decode_%s)\n\n",
+			s.Name, s.Name, s.KeyName, s.Name, s.Name))
+	}
+	return sb.String()
+}
+
+// writeContextKeyStubs generates src/context/context_gen.go with server-side
+// codec functions and key vars so server/templ code compiles without the WASM-only main.go.
+func writeContextKeyStubs(structs []structInfo, pkgName, keyVars string) {
+	if len(structs) == 0 {
+		_ = os.Remove("src/context/context_gen.go")
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("// Code generated by gothicframework — DO NOT EDIT.\n\n")
+	sb.WriteString("package " + pkgName + "\n\n")
+	sb.WriteString("import . \"github.com/felipegenef/gothicframework/pkg/wasm\"\n\n")
+	sb.WriteString(generateCodecs(structs))
+	sb.WriteString(keyVars)
+	_ = os.WriteFile("src/context/context_gen.go", []byte(sb.String()), 0644)
+}
+
+func writeWasmMain(src, body string, stdImports []string, ctxSnippets []string, codecSrc string, dest string) error {
 	var sb strings.Builder
 	sb.WriteString("//go:build js && wasm\n")
 	sb.WriteString("// Code generated from " + src + " — DO NOT EDIT.\n\n")
@@ -482,6 +843,13 @@ func writeWasmMain(src, body string, stdImports []string, dest string) error {
 		sb.WriteString("\t" + strings.TrimSpace(imp) + "\n")
 	}
 	sb.WriteString(")\n\n")
+	if codecSrc != "" {
+		sb.WriteString(codecSrc)
+	}
+	for _, snippet := range ctxSnippets {
+		sb.WriteString(snippet)
+		sb.WriteString("\n\n")
+	}
 	sb.WriteString("func main() {\n")
 	for _, line := range strings.Split(body, "\n") {
 		sb.WriteString("\t" + line + "\n")
