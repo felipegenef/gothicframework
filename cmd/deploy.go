@@ -95,6 +95,16 @@ func (command *DeployCommand) Deploy(stage string, action string) error {
 		return err
 	}
 
+	wasmPages, err := command.cli.Wasm.ScanPages("src/pages", "src/components")
+	if err != nil {
+		return fmt.Errorf("wasm: scan pages: %w", err)
+	}
+	if len(wasmPages) > 0 {
+		if err := command.cli.Wasm.GenerateAll(wasmPages, "public/wasm"); err != nil {
+			return fmt.Errorf("wasm: build: %w", err)
+		}
+	}
+
 	if err := command.cli.AwsSam.Build(); err != nil {
 		return err
 	}

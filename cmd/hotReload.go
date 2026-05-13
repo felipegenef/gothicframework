@@ -70,11 +70,16 @@ func newHotReloadCommand(cli gothic_cli.GothicCli) RunEFunc {
 
 func (command *HotReloadCommand) HotReload() error {
 	godotenv.Load()
-	// Load config to pick up tailwindBinary override if present
+	// Load config to pick up binary overrides if present
 	command.cli.GetConfig()
 	// Ensure tailwind binary is available before starting watch
 	if _, err := command.cli.Tailwind.EnsureBinary(); err != nil {
 		return fmt.Errorf("error resolving tailwind binary: %w", err)
+	}
+	// Ensure TinyGo is installed before any goroutines start — avoids a
+	// race between the download and the first rebuild() call.
+	if err := command.cli.Wasm.EnsureBinary(); err != nil {
+		return fmt.Errorf("error resolving tinygo binary: %w", err)
 	}
 	port := os.Getenv("HTTP_LISTEN_ADDR")
 	if port == "" {
@@ -248,6 +253,9 @@ func (command *HotReloadCommand) rebuild() {
 		return
 	}
 
+	// WASM must finish before restarting the app — browser reloads immediately after.
+	command.buildWasmAll()
+
 	log.Println("Build app...")
 	buildCmd := exec.Command("go", "build", "-o", command.mainBinaryName, "main.go")
 	buildCmd.Stdout = os.Stdout
@@ -280,6 +288,21 @@ func (command *HotReloadCommand) rebuild() {
 		}
 	}()
 
+}
+
+func (command *HotReloadCommand) buildWasmAll() {
+	pages, err := command.cli.Wasm.ScanPages("src/pages", "src/components")
+	if err != nil {
+		log.Printf("wasm: scan failed: %v", err)
+		return
+	}
+	if len(pages) == 0 {
+		return
+	}
+	log.Printf("wasm: building %d page(s)...", len(pages))
+	if err := command.cli.Wasm.GenerateAll(pages, "public/wasm"); err != nil {
+		log.Printf("wasm: build failed (continuing with stale binaries): %v", err)
+	}
 }
 
 func (command *HotReloadCommand) openBrowser(url string) error {

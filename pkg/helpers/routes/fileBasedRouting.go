@@ -2,8 +2,10 @@ package helpers
 
 import (
 	"bytes"
+	"context"
 	"encoding/gob"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,6 +43,10 @@ type RouteConfig[T any] struct {
 	HttpMethod      HttpMethod
 	RevalidateInSec int
 	Middleware      func(w http.ResponseWriter, r *http.Request) T
+	// PageState, if non-nil, signals that this route has a WASM reactive state
+	// function.  The CLI extracts the function body and compiles it with TinyGo.
+	// The function is never called server-side; it only needs to compile.
+	PageState func()
 }
 
 var DefaultConfig = RouteConfig[any]{
@@ -57,7 +63,14 @@ var DefaultApiConfig = ApiRouteConfig{
 }
 
 func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, component func(T) templ.Component) {
-	handler := config.resolveHandler(component)
+	wrapped := component
+	if config.PageState != nil {
+		wasmName := WasmOutputName(httpPath)
+		wrapped = func(props T) templ.Component {
+			return &wasmInjectedComponent{inner: component(props), wasmName: wasmName}
+		}
+	}
+	handler := config.resolveHandler(wrapped)
 
 	switch config.HttpMethod {
 	case GET:
@@ -71,6 +84,86 @@ func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, compo
 	case DELETE:
 		r.Delete(httpPath, handler)
 	}
+}
+
+// wasmInjectedComponent wraps a templ.Component and injects the WASM bootstrap
+// script before </body> in the rendered HTML.
+type wasmInjectedComponent struct {
+	inner    templ.Component
+	wasmName string
+}
+
+func (c *wasmInjectedComponent) Render(ctx context.Context, w io.Writer) error {
+	var buf bytes.Buffer
+	if err := c.inner.Render(ctx, &buf); err != nil {
+		return err
+	}
+	html := injectGothicScope(buf.Bytes(), c.wasmName)
+	_, err := w.Write(injectWasmBootstrap(html, c.wasmName))
+	return err
+}
+
+// injectGothicScope marks the scope boundary for a WASM instance.
+// Uses data-gothic-wasm (static, no random value) so the HTML is CDN-cacheable.
+// The browser-side bootstrap script generates the unique data-gothic-scope ID at runtime.
+func injectGothicScope(html []byte, wasmName string) []byte {
+	attr := `data-gothic-wasm="` + wasmName + `"`
+	if bytes.Contains(html, []byte("<body")) {
+		return bytes.Replace(html, []byte("<body"), []byte("<body "+attr), 1)
+	}
+	var buf bytes.Buffer
+	buf.WriteString(`<div ` + attr + ` style="display:contents">`)
+	buf.Write(html)
+	buf.WriteString(`</div>`)
+	return buf.Bytes()
+}
+
+// injectWasmBootstrap injects the WASM loader script.
+// The scope ID is generated client-side via Math.random() so the HTML remains
+// fully static and CDN-cacheable regardless of route type.
+func injectWasmBootstrap(html []byte, wasmName string) []byte {
+	isFullPage := bytes.Contains(html, []byte("</body>"))
+
+	// For full pages the scope is on <body>; for fragments it's on the wrapper div
+	// immediately before the script tag (previousElementSibling).
+	var findEl string
+	if isFullPage {
+		findEl = `document.querySelector('body[data-gothic-wasm="` + wasmName + `"]')`
+	} else {
+		findEl = `(document.currentScript&&document.currentScript.previousElementSibling)` +
+			`||document.querySelector('[data-gothic-wasm="` + wasmName + `"]:not([data-gothic-scope])')`
+	}
+
+	script := fmt.Sprintf(`<script>
+(function(){
+    var wn='%s';
+    var el=(%s);
+    if(!el)return;
+    var id=wn+'-'+(Math.random()*0xFFFFFFFF>>>0).toString(16).padStart(8,'0');
+    el.setAttribute('data-gothic-scope',id);
+    (async function(){
+        if(typeof Go==='undefined'){
+            await new Promise(function(res,rej){
+                var s=document.createElement('script');
+                s.src='/public/wasm_exec.js';
+                s.onload=res;s.onerror=rej;
+                document.head.appendChild(s);
+            });
+        }
+        var go=new Go();
+        var r=await WebAssembly.instantiateStreaming(
+            fetch('/public/wasm/'+wn+'.wasm.gz'),go.importObject
+        );
+        window.__gothicCurrentModule=id;
+        go.run(r.instance);
+    })();
+})();
+</script>`, wasmName, findEl)
+
+	if isFullPage {
+		return bytes.Replace(html, []byte("</body>"), []byte(script+"</body>"), 1)
+	}
+	return append(html, []byte(script)...)
 }
 
 func (config *RouteConfig[T]) resolveHandler(component func(T) templ.Component) http.HandlerFunc {

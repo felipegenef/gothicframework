@@ -26,6 +26,7 @@ type GothicCli struct {
 	AWS             helpers.AwsHelper
 	FileBasedRouter routes.FileBasedRouteHelper
 	Proxy           proxy.ProxyHelper
+	Wasm            helpers.WasmHelper
 }
 
 type CliCommands struct {
@@ -50,6 +51,7 @@ func NewCli() GothicCli {
 		Logger:          helpers.NewLogger("error", false, os.Stdout),
 		FileBasedRouter: routes.NewFileBasedRouteHelper(),
 		Proxy:           proxy.NewProxyHelper(),
+		Wasm:            helpers.NewWasmHelper(runtime.GOOS, runtime.GOARCH),
 	}
 
 	return cli
@@ -87,6 +89,12 @@ func (cli *GothicCli) GetConfig() (Config, error) {
 	}
 	if config.TailwindBinary != "" {
 		cli.Tailwind.ConfigOverride = config.TailwindBinary
+	}
+	if config.WasmTinyGoVersion != "" {
+		cli.Wasm.Version = config.WasmTinyGoVersion
+	}
+	if config.WasmBinary != "" {
+		cli.Wasm.ConfigOverride = config.WasmBinary
 	}
 	cli.config = &config
 	return config, nil

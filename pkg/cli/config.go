@@ -23,10 +23,12 @@ func ValidateStageName(name string) error {
 }
 
 type Config struct {
-	ProjectName    string `json:"projectName"`
-	GoModName      string `json:"goModuleName"`
-	TailwindBinary string `json:"tailwindBinary,omitempty"`
-	OptimizeImages struct {
+	ProjectName       string `json:"projectName"`
+	GoModName         string `json:"goModuleName"`
+	TailwindBinary    string `json:"tailwindBinary,omitempty"`
+	WasmBinary        string `json:"wasmBinary,omitempty"`
+	WasmTinyGoVersion string `json:"wasmTinyGoVersion,omitempty"`
+	OptimizeImages    struct {
 		LowResolutionRate int `json:"lowResolutionRate"`
 	} `json:"optimizeImages"`
 	Deploy *DeployConfig `json:"deploy"`

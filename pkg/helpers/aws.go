@@ -17,25 +17,50 @@ func NewAwsHelper() AwsHelper {
 
 func (helper *AwsHelper) AddCloudFrontAssets(originBucketName string, region string, awsProfile string) error {
 
-	// Construct the S3 bucket name
 	bucketPublicFolderName := "s3://" + originBucketName + "/public"
 
-	// Check the action and execute the corresponding command
+	// Delete existing S3 public folder contents so no stale files remain after deploy.
+	removeFilesCmd := exec.Command("aws", "s3", "rm", bucketPublicFolderName, "--recursive", "--region", region, "--profile", awsProfile)
+	removeFilesCmd.Stdout = os.Stdout
+	removeFilesCmd.Stdin = os.Stdin
+	removeFilesCmd.Stderr = os.Stderr
+	if err := removeFilesCmd.Run(); err != nil {
+		fmt.Printf("Error clearing S3 public folder before upload: %v", err)
+		return err
+	}
+	fmt.Println("S3 public folder cleared.")
 
 	addFilesCmd := exec.Command("aws", "s3", "cp", "public", bucketPublicFolderName, "--recursive", "--region", region, "--profile", awsProfile)
 	addFilesCmd.Stdout = os.Stdout
 	addFilesCmd.Stdin = os.Stdin
 	addFilesCmd.Stderr = os.Stderr
-
-	// Run the command
-	err := addFilesCmd.Run()
-	if err != nil {
+	if err := addFilesCmd.Run(); err != nil {
 		fmt.Printf("Error adding CloudFront assets: %v", err)
 		return err
 	}
 	fmt.Println("S3 Files added successfully.")
-	return nil
 
+	// Re-upload public/wasm/ with the correct WASM metadata so browsers receive
+	// Content-Type: application/wasm and Content-Encoding: gzip.
+	// The recursive upload above sets Content-Type: application/gzip (wrong).
+	if _, err := os.Stat("public/wasm"); err == nil {
+		wasmCmd := exec.Command("aws", "s3", "cp", "public/wasm",
+			bucketPublicFolderName+"/wasm",
+			"--recursive",
+			"--content-encoding", "gzip",
+			"--content-type", "application/wasm",
+			"--metadata-directive", "REPLACE",
+			"--region", region, "--profile", awsProfile)
+		wasmCmd.Stdout = os.Stdout
+		wasmCmd.Stdin = os.Stdin
+		wasmCmd.Stderr = os.Stderr
+		if err := wasmCmd.Run(); err != nil {
+			fmt.Printf("Error uploading WASM assets with correct headers: %v\n", err)
+			return err
+		}
+		fmt.Println("S3 WASM files uploaded with correct headers.")
+	}
+	return nil
 }
 
 func (helper *AwsHelper) RemoveCloudFrontAssets(originBucketName string, region string, awsProfile string) error {

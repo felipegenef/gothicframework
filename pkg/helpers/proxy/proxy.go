@@ -238,6 +238,11 @@ func (rt *roundTripper) setShouldSkipResponseModificationHeader(r *http.Request,
 
 // Modify response to inject script and handle encoding
 func (proxy *ProxyHelper) modifyResponse(r *http.Response) error {
+	// Disable caching for all dev proxy responses — same effect as DevTools "Disable cache".
+	r.Header.Set("Cache-Control", "no-store, must-revalidate")
+	r.Header.Del("ETag")
+	r.Header.Del("Last-Modified")
+
 	urlStr := r.Request.URL.String()
 
 	if r.Header.Get("gothic-framework-skip-modify") == "true" {
