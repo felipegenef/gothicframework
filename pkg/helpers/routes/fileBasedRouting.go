@@ -47,6 +47,9 @@ type RouteConfig[T any] struct {
 	// function.  The CLI extracts the function body and compiles it with TinyGo.
 	// The function is never called server-side; it only needs to compile.
 	PageState func()
+	// Path is the HTTP route path, set automatically by RegisterRoute.
+	// Use it with StatefulComponentOf to avoid hardcoding path strings.
+	Path string
 }
 
 var DefaultConfig = RouteConfig[any]{
@@ -63,6 +66,7 @@ var DefaultApiConfig = ApiRouteConfig{
 }
 
 func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, component func(T) templ.Component) {
+	config.Path = httpPath
 	wrapped := component
 	if config.PageState != nil {
 		wasmName := WasmOutputName(httpPath)

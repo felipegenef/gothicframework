@@ -1,0 +1,9 @@
+package gothicComponents
+
+// StatefulComponent renders an HTMX lazy-load wrapper around a component route.
+// Pass children to show a custom loading placeholder while the component loads.
+templ StatefulComponent(path string) {
+	<div hx-get={ path } hx-trigger="load" hx-swap="outerHTML">
+		{ children... }
+	</div>
+}

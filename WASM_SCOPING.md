@@ -196,3 +196,90 @@ user-triggered interactions (click, input, change, focus, blur). It is `undefine
 for programmatic calls from async contexts (setTimeout, Promise callbacks). In those
 cases the proxy falls back to the first registered module that has the function,
 which is correct when there is only one instance of a given component on the page.
+
+---
+
+## StatefulComponent — user-facing lazy loading
+
+### Why lazy loading is required
+
+Every component with a `PageState` function gets its own `.wasm.gz` file and its own
+bootstrap `<script>` tag injected by `wasmInjectedComponent.Render`. The script sets
+`window.__gothicCurrentModule` to the freshly generated scope ID immediately before
+calling `go.run()`, so the WASM module captures the right namespace in its
+package-level `cachedModuleID` init.
+
+This sequence only works correctly if **each WASM module starts after its scope element
+is already in the DOM**. When stateful components are inlined directly into a page's
+SSR output, all their `<script>` tags fire in parallel during the initial parse.
+`window.__gothicCurrentModule` gets overwritten by whichever `fetch` resolves last,
+causing every module that loaded after the first one to capture the wrong namespace.
+
+The fix is to load each stateful component as a separate HTMX request after the page
+is ready. Each request returns only that component's HTML + its own bootstrap script,
+so `window.__gothicCurrentModule` is set and read in an isolated, sequential step.
+
+### The old manual pattern
+
+Before `StatefulComponentOf`, users had to write this HTMX boilerplate for every
+stateful component slot:
+
+```html
+<div hx-get="/components/counterwidget" hx-trigger="load" hx-swap="outerHTML">
+    <!-- optional loading placeholder -->
+</div>
+```
+
+Problems:
+- The route string `/components/counterwidget` is a magic string that silently breaks
+  if the component file is renamed or moved.
+- Users must remember the HTMX attributes (`hx-trigger="load"`, `hx-swap="outerHTML"`)
+  every time.
+- There is no compile-time check that the route actually exists.
+
+### The solution: `StatefulComponentOf`
+
+`RouteConfig.Path` is now populated automatically by `RegisterRoute` at server startup.
+Two helpers in `github.com/felipegenef/gothicframework/components` expose this:
+
+```go
+// Type-safe entry point. Path comes from the config — no strings, no typos.
+func StatefulComponentOf[T any](config *routes.RouteConfig[T]) templ.Component
+
+// Lower-level, for when you want a custom loading placeholder as children.
+templ StatefulComponent(path string)
+```
+
+### Usage
+
+**Typical usage — type-safe, no loading placeholder:**
+```go
+import gothicComponents "github.com/felipegenef/gothicframework/components"
+
+@gothicComponents.StatefulComponentOf(&components.CounterWidgetConfig)
+```
+
+**With a custom loading placeholder (opt-in):**
+```go
+@gothicComponents.StatefulComponent(components.CounterWidgetConfig.Path) {
+    <div class="animate-pulse">Loading…</div>
+}
+```
+
+### How path discovery works
+
+`RegisterRoute` stores the HTTP path back onto the config struct via a pointer receiver:
+
+```go
+func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, ...) {
+    config.Path = httpPath   // written at server startup, before any request is served
+    ...
+}
+```
+
+The auto-generated `autoGenRoutes.go` calls `RegisterRoute` on every package-level
+config var (e.g. `components.CounterWidgetConfig.RegisterRoute(...)`). Because Go
+auto-takes the address for pointer-receiver methods on addressable variables, the
+`Path` field is set on the original package-level variable. By the time any Templ
+component renders (which only happens during an HTTP request), `Path` is always
+populated.
