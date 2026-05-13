@@ -11,7 +11,12 @@ import (
 
 func noCacheMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store, must-revalidate")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		// Strip conditional headers so FileServer always returns 200 with fresh content.
+		// Without this, FileServer honors If-None-Match / If-Modified-Since and returns
+		// 304, causing the browser to use a stale cached version of CSS/JS/WASM files.
+		r.Header.Del("If-None-Match")
+		r.Header.Del("If-Modified-Since")
 		next.ServeHTTP(w, r)
 	})
 }
