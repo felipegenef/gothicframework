@@ -188,36 +188,31 @@ func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decode
 // This stub exists so server-side code compiles without error.
 func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name} }
 
+type SharedCtxObservable[T any] struct{ inner *Observable[T] }
 
-type ContextSignal[T any] struct{ inner *Signal[T] }
+func (s *SharedCtxObservable[T]) Get() T                 { return s.inner.value }
+func (s *SharedCtxObservable[T]) Set(v T)                { s.inner.value = v }
+func (s *SharedCtxObservable[T]) addEffect(e *Subscription)    { s.inner.addEffect(e) }
+func (s *SharedCtxObservable[T]) removeEffect(e *Subscription) { s.inner.removeEffect(e) }
 
-func (s *ContextSignal[T]) Get() T                 { return s.inner.value }
-func (s *ContextSignal[T]) Set(v T)                { s.inner.value = v }
-func (s *ContextSignal[T]) addEffect(e *Effect)    { s.inner.addEffect(e) }
-func (s *ContextSignal[T]) removeEffect(e *Effect) { s.inner.removeEffect(e) }
-
-func UseContext[T SharedContext](key ContextKey[T], initial T) *ContextSignal[T] {
-	return &ContextSignal[T]{inner: &Signal[T]{value: initial}}
-}
-
-func RequestCtxSet(keyName, encoded string)              {}
-func ListenCtxSetReq(keyName string, fn func(string))    {}
-func PingCtxManager(keyName string)                      {}
-func ListenCtxOnline(keyName string, fn func(string))    {}
-func ListenCtxPing(keyName string, fn func())            {}
-func BroadcastCtxOnline(keyName, encoded string)         {}
+func RequestCtxSet(keyName, encoded string)                {}
+func ListenCtxSetReq(keyName string, fn func(string))      {}
+func PingCtxManager(keyName string)                        {}
+func ListenCtxOnline(keyName string, fn func(string))      {}
+func ListenCtxPing(keyName string, fn func())              {}
+func BroadcastCtxOnline(keyName, encoded string)           {}
 func PingUntilOnline(keyName string, isOnline func() bool) {}
 
 // ContextField stub — no-op broadcast and tracking for server-side compilation.
-type ContextField[T any] struct{ sig *Signal[T] }
+type ObservableField[T any] struct{ sig *Observable[T] }
 
-func NewContextField[T any](initial T) *ContextField[T] {
-	return &ContextField[T]{sig: &Signal[T]{value: initial}}
+func NewObservableField[T any](initial T) *ObservableField[T] {
+	return &ObservableField[T]{sig: &Observable[T]{value: initial}}
 }
-func (f *ContextField[T]) SetBroadcast(fn func())      {}
-func (f *ContextField[T]) Get() T                      { return f.sig.Get() }
-func (f *ContextField[T]) Peek() T                     { return f.sig.value }
-func (f *ContextField[T]) Set(v T)                     { f.sig.value = v }
-func (f *ContextField[T]) ApplyExternal(v T)           { f.sig.Set(v) }
-func (f *ContextField[T]) addEffect(_ *Effect)         {}
-func (f *ContextField[T]) removeEffect(_ *Effect)      {}
+func (f *ObservableField[T]) SetBroadcast(fn func())  {}
+func (f *ObservableField[T]) Get() T                  { return f.sig.Get() }
+func (f *ObservableField[T]) Peek() T                 { return f.sig.value }
+func (f *ObservableField[T]) Set(v T)                 { f.sig.value = v }
+func (f *ObservableField[T]) ApplyExternal(v T)       { f.sig.Set(v) }
+func (f *ObservableField[T]) addEffect(_ *Subscription)     {}
+func (f *ObservableField[T]) removeEffect(_ *Subscription)  {}

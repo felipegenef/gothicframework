@@ -192,24 +192,20 @@ func ensureContextStore() js.Value {
 	return store
 }
 
-// ── UseContext / UseSharedState ───────────────────────────────────────────────
+// ── SharedCtxObservable ───────────────────────────────────────────────────────
 
-// UseContext subscribes to the named context and returns a local *Signal[T]
-// that mirrors the provider's value. Reads the current value from the JS store
-// at startup (handles components that load after the provider already ran), then
-// listens for CustomEvents to update reactively. Use as a dep in UseEffect like
-// any other signal.
-// ContextSignal is a reactive signal bound to a shared context key.
-// Get/Set work like a regular signal, but Set also broadcasts the new value
-// to every other WASM module that called UseContext with the same key.
-type ContextSignal[T any] struct {
-	inner *Signal[T]
+// SharedCtxObservable is a reactive Observable bound to a shared context key.
+// Get/Set work like a regular Observable, but Set also broadcasts the new value
+// to every other WASM module sharing the same key.
+// Used internally by the auto-generated context constructors (e.g. PageCtxContext()).
+type SharedCtxObservable[T any] struct {
+	inner *Observable[T]
 	key   ContextKey[T]
 }
 
-func (s *ContextSignal[T]) Get() T { return s.inner.Get() }
+func (s *SharedCtxObservable[T]) Get() T { return s.inner.Get() }
 
-func (s *ContextSignal[T]) Set(v T) {
+func (s *SharedCtxObservable[T]) Set(v T) {
 	s.inner.value = v
 	s.inner.notifyAll()
 	encoded := s.key.encode(v)
@@ -220,40 +216,8 @@ func (s *ContextSignal[T]) Set(v T) {
 	js.Global().Get("document").Call("dispatchEvent", event)
 }
 
-func (s *ContextSignal[T]) addEffect(e *Effect)    { s.inner.addEffect(e) }
-func (s *ContextSignal[T]) removeEffect(e *Effect) { s.inner.removeEffect(e) }
-
-// UseContext subscribes to the named shared context and returns a *ContextSignal[T].
-// Reading the current value and reacting to updates from other modules is automatic.
-// Calling Set broadcasts the new value to every other WASM module sharing the same key.
-func UseContext[T SharedContext](key ContextKey[T], initial T) *ContextSignal[T] {
-	current := initial
-	v := ensureContextStore().Get(key.Name)
-	if !v.IsUndefined() && !v.IsNull() {
-		current = key.decode(v.String())
-	}
-
-	cs := &ContextSignal[T]{
-		inner: &Signal[T]{value: current},
-		key:   key,
-	}
-
-	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) > 0 {
-			detail := args[0].Get("detail")
-			if !detail.IsUndefined() && !detail.IsNull() {
-				decoded := key.decode(detail.String())
-				cs.inner.value = decoded
-				cs.inner.notifyAll()
-			}
-		}
-		return nil
-	})
-	keep = append(keep, listener)
-	js.Global().Get("document").Call("addEventListener", "gothic:context:"+key.Name, listener)
-
-	return cs
-}
+func (s *SharedCtxObservable[T]) addEffect(e *Subscription)    { s.inner.addEffect(e) }
+func (s *SharedCtxObservable[T]) removeEffect(e *Subscription) { s.inner.removeEffect(e) }
 
 // AutoKey is rewritten to BinaryKey by the CLI before TinyGo compiles.
 // This stub exists so server-side code compiles; WASM code never calls it directly.
@@ -261,46 +225,46 @@ func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name
 
 // ── Per-field context signals ─────────────────────────────────────────────────
 
-// ContextField is a reactive signal bound to one field of a shared context struct.
-// It behaves like *Signal[T] but Set also broadcasts the full context to other modules.
-// Pass *ContextField as a dep in UseEffect to react to individual property changes.
-type ContextField[T any] struct {
-	sig       *Signal[T]
+// ObservableField is a reactive Observable bound to one field of a shared context struct.
+// It behaves like *Observable[T] but Set also broadcasts the full context to other modules.
+// Pass *ObservableField as a dep in Observe to react to individual property changes.
+type ObservableField[T any] struct {
+	sig       *Observable[T]
 	broadcast func()
 }
 
-// NewContextField creates a ContextField with the given initial value.
-func NewContextField[T any](initial T) *ContextField[T] {
-	return &ContextField[T]{sig: &Signal[T]{value: initial}}
+// NewObservableField creates an ObservableField with the given initial value.
+func NewObservableField[T any](initial T) *ObservableField[T] {
+	return &ObservableField[T]{sig: &Observable[T]{value: initial}}
 }
 
 // SetBroadcast wires the broadcast callback called whenever Set updates this field.
-func (f *ContextField[T]) SetBroadcast(fn func()) { f.broadcast = fn }
+func (f *ObservableField[T]) SetBroadcast(fn func()) { f.broadcast = fn }
 
 // Get returns the current value, auto-registering as a dep of any running effect.
-func (f *ContextField[T]) Get() T { return f.sig.Get() }
+func (f *ObservableField[T]) Get() T { return f.sig.Get() }
 
 // Peek returns the current value without registering as an effect dependency.
 // Used internally by broadcast closures to read sibling field values safely.
-func (f *ContextField[T]) Peek() T { return f.sig.value }
+func (f *ObservableField[T]) Peek() T { return f.sig.value }
 
 // Set sends a set-request to the context manager WASM.
 // The local value is silently updated so Peek() returns the correct value during
 // encoding, but subscribers are NOT notified until the manager broadcasts back.
-func (f *ContextField[T]) Set(v T) {
+func (f *ObservableField[T]) Set(v T) {
 	f.sig.value = v
 	f.broadcast()
 }
 
 // ApplyExternal updates value and notifies subscribers without triggering broadcast.
 // Used by generated context listeners and Set-all methods to avoid redundant events.
-func (f *ContextField[T]) ApplyExternal(v T) {
+func (f *ObservableField[T]) ApplyExternal(v T) {
 	f.sig.value = v
 	f.sig.notifyAll()
 }
 
-func (f *ContextField[T]) addEffect(e *Effect)    { f.sig.addEffect(e) }
-func (f *ContextField[T]) removeEffect(e *Effect) { f.sig.removeEffect(e) }
+func (f *ObservableField[T]) addEffect(e *Subscription)    { f.sig.addEffect(e) }
+func (f *ObservableField[T]) removeEffect(e *Subscription) { f.sig.removeEffect(e) }
 
 // ── Cross-module context helpers ──────────────────────────────────────────────
 

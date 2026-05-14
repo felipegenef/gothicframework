@@ -12,7 +12,7 @@ import (
 var wasmCmd = &cobra.Command{
 	Use:   "wasm",
 	Short: "Manage WASM reactive pages.",
-	Long: `Scans src/pages and src/components for routes with PageState set,
+	Long: `Scans src/pages and src/components for routes with ClientSideState set,
 then compiles each one to a .wasm.gz file using the managed TinyGo toolchain.
 
 TinyGo is downloaded automatically on first use and cached in the OS cache dir.
@@ -92,10 +92,10 @@ func newWasmBuildCommand(cli gothic_cli.GothicCli) RunEFunc {
 			return fmt.Errorf("wasm: scan: %w", err)
 		}
 		if len(pages) == 0 {
-			fmt.Println("wasm: no pages with PageState found")
+			fmt.Println("wasm: no pages with ClientSideState found")
 			return nil
 		}
-		fmt.Printf("wasm: found %d page(s) with PageState\n", len(pages))
+		fmt.Printf("wasm: found %d page(s) with ClientSideState\n", len(pages))
 		return cli.Wasm.GenerateAll(pages, "public/wasm")
 	}
 }

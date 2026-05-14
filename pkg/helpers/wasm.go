@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +39,47 @@ const (
 	tmplContextGen     = ".gothicCli/templates/wasm/context_gen.go"
 	tmplWasmPageMain   = ".gothicCli/templates/wasm/wasm_page_main.go"
 	tmplCtxManagerMain = ".gothicCli/templates/wasm/wasm_ctx_manager_main.go"
+	wasmCachePath      = ".gothicCli/wasm-cache.json"
 )
+
+// ─── Build cache ───────────────────────────────────────────────────────────────
+
+// wasmCache persists per-target content hashes so unchanged WASMs are skipped.
+// The cache is stored at wasmCachePath and loaded once per GenerateAll invocation.
+type wasmCache struct {
+	mu     sync.Mutex
+	hashes map[string]string
+}
+
+func loadWasmCache() *wasmCache {
+	c := &wasmCache{hashes: make(map[string]string)}
+	if data, err := os.ReadFile(wasmCachePath); err == nil {
+		_ = json.Unmarshal(data, &c.hashes)
+	}
+	return c
+}
+
+func (c *wasmCache) upToDate(name, hash string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return hash != "" && c.hashes[name] == hash
+}
+
+func (c *wasmCache) update(name, hash string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hashes[name] = hash
+}
+
+func (c *wasmCache) save() {
+	c.mu.Lock()
+	data, err := json.MarshalIndent(c.hashes, "", "  ")
+	c.mu.Unlock()
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(wasmCachePath, data, 0644)
+}
 
 // ─── Template data structs ─────────────────────────────────────────────────────
 
@@ -150,6 +192,7 @@ type WasmHelper struct {
 	Arch           string
 	Version        string
 	ConfigOverride string
+	cache          *wasmCache
 }
 
 // WasmPage describes a single page that has a WASM state function.
@@ -168,6 +211,53 @@ func NewWasmHelper(goos, goarch string) WasmHelper {
 		Runtime:  goos,
 		Arch:     goarch,
 		Version:  tinyGoVersion,
+	}
+}
+
+// ─── Input hash computation ───────────────────────────────────────────────────
+
+// pageInputHash hashes the source file, all context files, and the page template.
+// Any change in these inputs produces a different hash and triggers a rebuild.
+func (h *WasmHelper) pageInputHash(page WasmPage) string {
+	hh := sha256.New()
+	if data, err := os.ReadFile(page.SourceFile); err == nil {
+		hh.Write(data)
+	}
+	h.feedContextFiles(hh)
+	h.feedFile(hh, tmplWasmPageMain)
+	return hex.EncodeToString(hh.Sum(nil))
+}
+
+// ctxManagerInputHash hashes all context files and the manager template.
+func (h *WasmHelper) ctxManagerInputHash() string {
+	hh := sha256.New()
+	h.feedContextFiles(hh)
+	h.feedFile(hh, tmplCtxManagerMain)
+	return hex.EncodeToString(hh.Sum(nil))
+}
+
+func (h *WasmHelper) feedContextFiles(hh io.Writer) {
+	entries, err := os.ReadDir("src/context")
+	if err != nil {
+		return
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") && e.Name() != "context_gen.go" {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if data, err := os.ReadFile(filepath.Join("src/context", name)); err == nil {
+			hh.Write(data)
+		}
+	}
+}
+
+func (h *WasmHelper) feedFile(hh io.Writer, path string) {
+	if data, err := os.ReadFile(path); err == nil {
+		hh.Write(data)
 	}
 }
 
@@ -320,8 +410,8 @@ func (h *WasmHelper) EnsureBinary() error {
 
 // ─── Page scanning ─────────────────────────────────────────────────────────────
 
-var pageStateInlineRe = regexp.MustCompile(`(?m)PageState:\s*func\s*\(\s*\)\s*\{`)
-var pageStateNamedRe = regexp.MustCompile(`(?m)PageState:\s*(\w+)`)
+var pageStateInlineRe = regexp.MustCompile(`(?m)ClientSideState:\s*func\s*\(\s*\)\s*\{`)
+var pageStateNamedRe = regexp.MustCompile(`(?m)ClientSideState:\s*(\w+)`)
 
 func (h *WasmHelper) ScanPages(pagesDir, componentsDir string) ([]WasmPage, error) {
 	var pages []WasmPage
@@ -365,14 +455,14 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 		openBrace := loc[1] - 1
 		body = h.extractFuncBody(content, openBrace)
 		if body == "" {
-			return WasmPage{}, false, fmt.Errorf("wasm: could not extract inline PageState body in %s", path)
+			return WasmPage{}, false, fmt.Errorf("wasm: could not extract inline ClientSideState body in %s", path)
 		}
 	} else if m := pageStateNamedRe.FindStringSubmatch(content); m != nil {
 		funcName := m[1]
 		funcRe := regexp.MustCompile(`(?m)^func\s+` + regexp.QuoteMeta(funcName) + `\s*\(\s*\)\s*\{`)
 		floc := funcRe.FindStringIndex(content)
 		if floc == nil {
-			return WasmPage{}, false, fmt.Errorf("wasm: PageState func %s not found in %s", funcName, path)
+			return WasmPage{}, false, fmt.Errorf("wasm: ClientSideState func %s not found in %s", funcName, path)
 		}
 		openBrace := floc[1] - 1
 		body = h.extractFuncBody(content, openBrace)
@@ -399,6 +489,18 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 // ─── Build pipeline ────────────────────────────────────────────────────────────
 
 func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
+	var hash string
+	if h.cache != nil {
+		hash = h.pageInputHash(page)
+		gzPath := filepath.Join(outDir, page.OutputName+".wasm.gz")
+		if h.cache.upToDate(page.OutputName, hash) {
+			if _, err := os.Stat(gzPath); err == nil {
+				fmt.Printf("wasm: %s → up to date\n", page.OutputName)
+				return nil
+			}
+		}
+	}
+
 	tempModDir, err := os.MkdirTemp("", "tinygo-runtime-*")
 	if err != nil {
 		return fmt.Errorf("wasm: mkdirtemp: %w", err)
@@ -472,6 +574,9 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	gzSize, _ := h.fileSize(gzPath)
 	fmt.Printf("wasm: %s → %s → %s (gzip)\n",
 		page.OutputName, h.formatBytes(wasmSize), h.formatBytes(gzSize))
+	if hash != "" {
+		h.cache.update(page.OutputName, hash)
+	}
 	return nil
 }
 
@@ -483,21 +588,22 @@ func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 		return nil
 	}
 
-	os.RemoveAll(outDir)
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return fmt.Errorf("wasm: mkdir %s: %w", outDir, err)
 	}
+
+	h.cache = loadWasmCache()
 
 	if err := h.GenerateContextManagers(outDir); err != nil {
 		fmt.Fprintf(os.Stderr, "wasm: context manager build failed: %v\n", err)
 	}
 
-	g, ctx := errgroup.WithContext(context.Background())
+	g, gctx := errgroup.WithContext(context.Background())
 	sem := semaphore.NewWeighted(int64(runtime.NumCPU()))
 	for _, page := range pages {
 		page := page
 		g.Go(func() error {
-			if err := sem.Acquire(ctx, 1); err != nil {
+			if err := sem.Acquire(gctx, 1); err != nil {
 				return err
 			}
 			defer sem.Release(1)
@@ -507,6 +613,8 @@ func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 	if err := g.Wait(); err != nil {
 		return err
 	}
+
+	h.cache.save()
 	return h.CopyWasmExec("public")
 }
 
@@ -558,6 +666,19 @@ func (h *WasmHelper) GenerateContextManagers(outDir string) error {
 }
 
 func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStructs []structInfo, outDir string) error {
+	wasmName := "ctx-" + s.KeyName
+	var hash string
+	if h.cache != nil {
+		hash = h.ctxManagerInputHash()
+		gzPath := filepath.Join(outDir, wasmName+".wasm.gz")
+		if h.cache.upToDate(wasmName, hash) {
+			if _, err := os.Stat(gzPath); err == nil {
+				fmt.Printf("wasm: %s → up to date\n", wasmName)
+				return nil
+			}
+		}
+	}
+
 	tempModDir, err := os.MkdirTemp("", "tinygo-ctx-*")
 	if err != nil {
 		return fmt.Errorf("wasm: mkdirtemp: %w", err)
@@ -583,7 +704,6 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 		return fmt.Errorf("wasm: render context manager main.go: %w", err)
 	}
 
-	wasmName := "ctx-" + s.KeyName
 	absOutFile, err := filepath.Abs(filepath.Join(outDir, wasmName+".wasm"))
 	if err != nil {
 		return err
@@ -623,6 +743,9 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 
 	gzSize, _ := h.fileSize(gzPath)
 	fmt.Printf("wasm: %s → %s → %s (gzip)\n", wasmName, h.formatBytes(wasmSize), h.formatBytes(gzSize))
+	if hash != "" {
+		h.cache.update(wasmName, hash)
+	}
 	return nil
 }
 

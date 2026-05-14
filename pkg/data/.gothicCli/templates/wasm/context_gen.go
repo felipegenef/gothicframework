@@ -38,7 +38,7 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 
 {{end}}
 {{range .CtxTypes}}type {{.TypeName}} struct {
-{{range .Fields}}	{{.Name}} *ContextField[{{.Type}}]
+{{range .Fields}}	{{.Name}} *ObservableField[{{.Type}}]
 {{end}}	_online  bool
 	_pending string
 }
@@ -48,7 +48,7 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 	var _z {{.StructName}}
 	if len(initial) > 0 { _z = initial[0] }
 	return &{{.TypeName}}{
-{{range .Fields}}		{{.Name}}: NewContextField(_z.{{.Name}}),
+{{range .Fields}}		{{.Name}}: NewObservableField(_z.{{.Name}}),
 {{end}}	}
 }
 

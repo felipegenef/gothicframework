@@ -137,7 +137,7 @@ func dispatchBool(name string, val bool) {
 	}
 }
 
-func Register(name string, fn func()) {
+func CreateWasmFunc(name string, fn func()) {
 	impl := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		fn()
 		return nil
@@ -158,7 +158,7 @@ func Register(name string, fn func()) {
 	}
 }
 
-func RegisterInput(name string, fn func(string)) {
+func CreateWasmStringFunc(name string, fn func(string)) {
 	impl := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		val := ""
 		if len(args) > 0 {
@@ -187,7 +187,7 @@ func RegisterInput(name string, fn func(string)) {
 	}
 }
 
-func RegisterBool(name string, fn func(bool)) {
+func CreateWasmBoolFunc(name string, fn func(bool)) {
 	impl := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		val := false
 		if len(args) > 0 {

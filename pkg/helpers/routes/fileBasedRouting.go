@@ -43,10 +43,10 @@ type RouteConfig[T any] struct {
 	HttpMethod      HttpMethod
 	RevalidateInSec int
 	Middleware      func(w http.ResponseWriter, r *http.Request) T
-	// PageState, if non-nil, signals that this route has a WASM reactive state
+	// ClientSideState, if non-nil, marks this route as having a WASM reactive state
 	// function.  The CLI extracts the function body and compiles it with TinyGo.
 	// The function is never called server-side; it only needs to compile.
-	PageState func()
+	ClientSideState func()
 	// Path is the HTTP route path, set automatically by RegisterRoute.
 	// Use it with StatefulComponentOf to avoid hardcoding path strings.
 	Path string
@@ -68,7 +68,7 @@ var DefaultApiConfig = ApiRouteConfig{
 func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, component func(T) templ.Component) {
 	config.Path = httpPath
 	wrapped := component
-	if config.PageState != nil {
+	if config.ClientSideState != nil {
 		wasmName := WasmOutputName(httpPath)
 		wrapped = func(props T) templ.Component {
 			return &wasmInjectedComponent{inner: component(props), wasmName: wasmName}

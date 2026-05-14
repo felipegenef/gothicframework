@@ -10,15 +10,13 @@
 package wasm
 
 import (
-	"encoding/json"
 	"math"
-	"strconv"
 )
 
 // GothicSharedContext is a zero-size marker type embedded in context structs.
 // The CLI reads the name tag on this field to derive the context key name
 // and auto-generates the BinaryKey variable (e.g. var PageCtxKey = BinaryKey[PageCtx](...)).
-// Embedding it also satisfies the SharedContext constraint, which is required by UseContext.
+// Embedding it also satisfies the SharedContext constraint, which is required by the context API.
 type GothicSharedContext struct{}
 
 func (GothicSharedContext) isGothicSharedContext() {}
@@ -27,33 +25,48 @@ func (GothicSharedContext) isGothicSharedContext() {}
 // Only structs that embed GothicSharedContext satisfy it.
 type SharedContext interface{ isGothicSharedContext() }
 
-// Signal is a typed reactive state container (server-side no-op).
-type Signal[T any] struct{ value T }
+// Observable is a typed reactive state container (server-side no-op).
+// Similar to useState in React — holds a value and notifies observers on change.
+type Observable[T any] struct{ value T }
 
-// Effect is a reactive computation (server-side no-op).
-type Effect struct{}
+// Subscription is a reactive computation (server-side no-op).
+type Subscription struct{}
 
-// UseState creates a Signal with the given initial value.
-func UseState[T any](initial T) *Signal[T] { return &Signal[T]{value: initial} }
+// CreateObservable creates an Observable with the given initial value.
+// It is the Gothic equivalent of React's useState hook.
+//
+// Example:
+//
+//	count := CreateObservable(0)
+//	label := CreateObservable("hello")
+//
+//	count.Set(count.Get() + 1)  // triggers all Observe callbacks that depend on count
+func CreateObservable[T any](initial T) *Observable[T] { return &Observable[T]{value: initial} }
 
-// Get returns the current signal value.
-func (s *Signal[T]) Get() T { return s.value }
+// Get returns the current observable value.
+func (s *Observable[T]) Get() T { return s.value }
 
-// Set updates the signal value.
-func (s *Signal[T]) Set(v T) { s.value = v }
+// Set updates the observable value.
+func (s *Observable[T]) Set(v T) { s.value = v }
 
-// UseEffect runs fn immediately (server-side no-op — fn is not called).
-// Pass deps to re-run fn when those signals change; pass none to run once.
-func UseEffect(fn func(), deps ...any) *Effect { return &Effect{} }
+// Observe runs fn immediately and re-runs it whenever a listed dep changes.
+// It is the Gothic equivalent of React's useEffect hook.
+// Pass no deps to run fn exactly once with no reactive subscription.
+//
+// Example:
+//
+//	count := CreateObservable(0)
+//
+//	Observe(func() {
+//	    SetText("counter", fmt.Sprintf("%d", count.Get()))
+//	}, count)
+func Observe(fn func(), deps ...any) *Subscription { return &Subscription{} }
 
-// UseEffectWithCleanup is like UseEffect with a cleanup function.
-func UseEffectWithCleanup(fn func() func(), deps ...any) *Effect { return &Effect{} }
+// ObserveWithCleanup is like Observe with a cleanup function.
+func ObserveWithCleanup(fn func() func(), deps ...any) *Subscription { return &Subscription{} }
 
 // Stop deactivates an effect (no-op server-side).
-func (e *Effect) Stop() {}
-
-// Batch defers effect re-executions (server-side runs fn immediately).
-func Batch(fn func()) { fn() }
+func (e *Subscription) Stop() {}
 
 // DOM helpers — all no-ops on the server.
 
@@ -69,85 +82,21 @@ func SetStyle(id, property, value string) {}
 
 // Event registration — no-ops on the server.
 
-func Register(name string, fn func())            {}
-func RegisterInput(name string, fn func(string)) {}
-func RegisterBool(name string, fn func(bool))    {}
+func CreateWasmFunc(name string, fn func())            {}
+func CreateWasmStringFunc(name string, fn func(string)) {}
+func CreateWasmBoolFunc(name string, fn func(bool))    {}
 
-// Context — no-ops on the server.
+// ── Context infrastructure (generated code only — not part of the user API) ───
 
-// ContextKey is a typed context identifier that carries its own codec.
-// Construct via the factory functions (IntKey, StringKey, JsonKey, etc.).
+// ContextKey is a typed key used by the auto-generated context system.
+// Users never construct these directly — the CLI generates them from src/context/*.go.
 type ContextKey[T any] struct {
 	Name   string
 	encode func(T) string
 	decode func(string) T
 }
 
-func BoolKey(name string) ContextKey[bool] {
-	return ContextKey[bool]{Name: name, encode: strconv.FormatBool, decode: func(s string) bool { b, _ := strconv.ParseBool(s); return b }}
-}
-func StringKey(name string) ContextKey[string] {
-	return ContextKey[string]{Name: name, encode: func(s string) string { return s }, decode: func(s string) string { return s }}
-}
-func IntKey(name string) ContextKey[int] {
-	return ContextKey[int]{Name: name, encode: strconv.Itoa, decode: func(s string) int { n, _ := strconv.Atoi(s); return n }}
-}
-func Int8Key(name string) ContextKey[int8] {
-	return ContextKey[int8]{Name: name, encode: func(v int8) string { return strconv.FormatInt(int64(v), 10) }, decode: func(s string) int8 { n, _ := strconv.ParseInt(s, 10, 8); return int8(n) }}
-}
-func Int16Key(name string) ContextKey[int16] {
-	return ContextKey[int16]{Name: name, encode: func(v int16) string { return strconv.FormatInt(int64(v), 10) }, decode: func(s string) int16 { n, _ := strconv.ParseInt(s, 10, 16); return int16(n) }}
-}
-func Int32Key(name string) ContextKey[int32] {
-	return ContextKey[int32]{Name: name, encode: func(v int32) string { return strconv.FormatInt(int64(v), 10) }, decode: func(s string) int32 { n, _ := strconv.ParseInt(s, 10, 32); return int32(n) }}
-}
-func Int64Key(name string) ContextKey[int64] {
-	return ContextKey[int64]{Name: name, encode: func(v int64) string { return strconv.FormatInt(v, 10) }, decode: func(s string) int64 { n, _ := strconv.ParseInt(s, 10, 64); return n }}
-}
-func UintKey(name string) ContextKey[uint] {
-	return ContextKey[uint]{Name: name, encode: func(v uint) string { return strconv.FormatUint(uint64(v), 10) }, decode: func(s string) uint { n, _ := strconv.ParseUint(s, 10, 64); return uint(n) }}
-}
-func Uint8Key(name string) ContextKey[uint8] {
-	return ContextKey[uint8]{Name: name, encode: func(v uint8) string { return strconv.FormatUint(uint64(v), 10) }, decode: func(s string) uint8 { n, _ := strconv.ParseUint(s, 10, 8); return uint8(n) }}
-}
-func Uint16Key(name string) ContextKey[uint16] {
-	return ContextKey[uint16]{Name: name, encode: func(v uint16) string { return strconv.FormatUint(uint64(v), 10) }, decode: func(s string) uint16 { n, _ := strconv.ParseUint(s, 10, 16); return uint16(n) }}
-}
-func Uint32Key(name string) ContextKey[uint32] {
-	return ContextKey[uint32]{Name: name, encode: func(v uint32) string { return strconv.FormatUint(uint64(v), 10) }, decode: func(s string) uint32 { n, _ := strconv.ParseUint(s, 10, 32); return uint32(n) }}
-}
-func Uint64Key(name string) ContextKey[uint64] {
-	return ContextKey[uint64]{Name: name, encode: func(v uint64) string { return strconv.FormatUint(v, 10) }, decode: func(s string) uint64 { n, _ := strconv.ParseUint(s, 10, 64); return n }}
-}
-func Float32Key(name string) ContextKey[float32] {
-	return ContextKey[float32]{Name: name, encode: func(v float32) string { return strconv.FormatFloat(float64(v), 'f', -1, 32) }, decode: func(s string) float32 { f, _ := strconv.ParseFloat(s, 32); return float32(f) }}
-}
-func Float64Key(name string) ContextKey[float64] {
-	return ContextKey[float64]{Name: name, encode: func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }, decode: func(s string) float64 { f, _ := strconv.ParseFloat(s, 64); return f }}
-}
-func RuneKey(name string) ContextKey[rune] {
-	return ContextKey[rune]{Name: name, encode: func(v rune) string { return strconv.FormatInt(int64(v), 10) }, decode: func(s string) rune { n, _ := strconv.ParseInt(s, 10, 32); return rune(n) }}
-}
-func ByteKey(name string) ContextKey[byte] {
-	return ContextKey[byte]{Name: name, encode: func(v byte) string { return strconv.FormatUint(uint64(v), 10) }, decode: func(s string) byte { n, _ := strconv.ParseUint(s, 10, 8); return byte(n) }}
-}
-
-// JsonKey returns a ContextKey for any struct or slice type, serialized as JSON.
-func JsonKey[T any](name string) ContextKey[T] {
-	return ContextKey[T]{
-		Name: name,
-		encode: func(v T) string { b, _ := json.Marshal(v); return string(b) },
-		decode: func(s string) T { var v T; _ = json.Unmarshal([]byte(s), &v); return v },
-	}
-}
-
-// CustomKey returns a ContextKey with user-supplied encode/decode functions.
-func CustomKey[T any](name string, encode func(T) string, decode func(string) T) ContextKey[T] {
-	return ContextKey[T]{Name: name, encode: encode, decode: decode}
-}
-
-// BinaryKey returns a ContextKey that serializes T using a compact little-endian binary codec.
-// No reflection, no encoding/json — just typed Encoder/Decoder calls.
+// BinaryKey is used exclusively by CLI-generated code in src/context/context_gen.go.
 func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decoder) T) ContextKey[T] {
 	return ContextKey[T]{
 		Name: name,
@@ -163,13 +112,9 @@ func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decode
 	}
 }
 
-// AutoKey is the zero-boilerplate context key. The CLI reads the struct definition
-// from src/wasm/*.go, generates _encode_T / _decode_T, and rewrites AutoKey[T]("name")
-// to BinaryKey[T]("name", _encode_T, _decode_T) before TinyGo compiles.
-// Server-side this returns a stub key (ProvideContext/UseContext are no-ops anyway).
-func AutoKey[T any](name string) ContextKey[T] {
-	return ContextKey[T]{Name: name}
-}
+// AutoKey is rewritten to BinaryKey by the CLI before TinyGo compiles.
+// Server-side this is a no-op stub so the code compiles.
+func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name} }
 
 // Encoder writes a little-endian binary stream (server-side stub — mirrors runtime.Encoder).
 type Encoder struct{ Buf []byte }
@@ -188,7 +133,13 @@ func (e *Encoder) I32(v int32)   { e.U32(uint32(v)) }
 func (e *Encoder) I64(v int64)   { e.U64(uint64(v)) }
 func (e *Encoder) F32(v float32) { e.U32(math.Float32bits(v)) }
 func (e *Encoder) F64(v float64) { e.U64(math.Float64bits(v)) }
-func (e *Encoder) Bool(v bool)   { b := byte(0); if v { b = 1 }; e.Buf = append(e.Buf, b) }
+func (e *Encoder) Bool(v bool) {
+	b := byte(0)
+	if v {
+		b = 1
+	}
+	e.Buf = append(e.Buf, b)
+}
 func (e *Encoder) Bytes(v []byte)  { e.U32(uint32(len(v))); e.Buf = append(e.Buf, v...) }
 func (e *Encoder) String(v string) { e.U32(uint32(len(v))); e.Buf = append(e.Buf, v...) }
 
@@ -200,35 +151,55 @@ type Decoder struct {
 }
 
 func (d *Decoder) need(n int) bool {
-	if d.Err != nil { return false }
-	if d.Pos+n > len(d.Buf) { d.Err = decErr("codec: buffer underflow"); return false }
+	if d.Err != nil {
+		return false
+	}
+	if d.Pos+n > len(d.Buf) {
+		d.Err = decErr("codec: buffer underflow")
+		return false
+	}
 	return true
 }
 
 type decErr string
+
 func (e decErr) Error() string { return string(e) }
 
 func (d *Decoder) U8() uint8 {
-	if !d.need(1) { return 0 }
-	v := d.Buf[d.Pos]; d.Pos++; return v
+	if !d.need(1) {
+		return 0
+	}
+	v := d.Buf[d.Pos]
+	d.Pos++
+	return v
 }
 func (d *Decoder) U16() uint16 {
-	if !d.need(2) { return 0 }
-	v := uint16(d.Buf[d.Pos]) | uint16(d.Buf[d.Pos+1])<<8; d.Pos += 2; return v
+	if !d.need(2) {
+		return 0
+	}
+	v := uint16(d.Buf[d.Pos]) | uint16(d.Buf[d.Pos+1])<<8
+	d.Pos += 2
+	return v
 }
 func (d *Decoder) U32() uint32 {
-	if !d.need(4) { return 0 }
+	if !d.need(4) {
+		return 0
+	}
 	v := uint32(d.Buf[d.Pos]) | uint32(d.Buf[d.Pos+1])<<8 |
 		uint32(d.Buf[d.Pos+2])<<16 | uint32(d.Buf[d.Pos+3])<<24
-	d.Pos += 4; return v
+	d.Pos += 4
+	return v
 }
 func (d *Decoder) U64() uint64 {
-	if !d.need(8) { return 0 }
+	if !d.need(8) {
+		return 0
+	}
 	v := uint64(d.Buf[d.Pos]) | uint64(d.Buf[d.Pos+1])<<8 |
 		uint64(d.Buf[d.Pos+2])<<16 | uint64(d.Buf[d.Pos+3])<<24 |
 		uint64(d.Buf[d.Pos+4])<<32 | uint64(d.Buf[d.Pos+5])<<40 |
 		uint64(d.Buf[d.Pos+6])<<48 | uint64(d.Buf[d.Pos+7])<<56
-	d.Pos += 8; return v
+	d.Pos += 8
+	return v
 }
 func (d *Decoder) I32() int32   { return int32(d.U32()) }
 func (d *Decoder) I64() int64   { return int64(d.U64()) }
@@ -237,13 +208,21 @@ func (d *Decoder) F64() float64 { return math.Float64frombits(d.U64()) }
 func (d *Decoder) Bool() bool   { return d.U8() != 0 }
 func (d *Decoder) Bytes() []byte {
 	n := d.U32()
-	if !d.need(int(n)) { return nil }
-	v := d.Buf[d.Pos : d.Pos+int(n)]; d.Pos += int(n); return v
+	if !d.need(int(n)) {
+		return nil
+	}
+	v := d.Buf[d.Pos : d.Pos+int(n)]
+	d.Pos += int(n)
+	return v
 }
 func (d *Decoder) String() string {
 	n := d.U32()
-	if !d.need(int(n)) { return "" }
-	v := string(d.Buf[d.Pos : d.Pos+int(n)]); d.Pos += int(n); return v
+	if !d.need(int(n)) {
+		return ""
+	}
+	v := string(d.Buf[d.Pos : d.Pos+int(n)])
+	d.Pos += int(n)
+	return v
 }
 
 const hextable = "0123456789abcdef"
@@ -258,7 +237,9 @@ func hexEncode(src []byte) string {
 }
 
 func hexDecode(s string) []byte {
-	if len(s)%2 != 0 { return nil }
+	if len(s)%2 != 0 {
+		return nil
+	}
 	dst := make([]byte, len(s)/2)
 	for i := 0; i < len(s); i += 2 {
 		dst[i/2] = unhex(s[i])<<4 | unhex(s[i+1])
@@ -268,41 +249,34 @@ func hexDecode(s string) []byte {
 
 func unhex(c byte) byte {
 	switch {
-	case c >= '0' && c <= '9': return c - '0'
-	case c >= 'a' && c <= 'f': return c - 'a' + 10
-	case c >= 'A' && c <= 'F': return c - 'A' + 10
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10
 	}
 	return 0
 }
 
+// SharedCtxObservable is the internal type backing auto-generated context constructors.
+// Users access shared context via the generated e.g. PageCtxContext() — not directly.
+type SharedCtxObservable[T any] struct{ value T }
 
-// ContextSignal server-side stub — same API as the WASM implementation, no-op broadcast.
-type ContextSignal[T any] struct{ value T }
+func (s *SharedCtxObservable[T]) Get() T  { return s.value }
+func (s *SharedCtxObservable[T]) Set(v T) { s.value = v }
 
-func (s *ContextSignal[T]) Get() T  { return s.value }
-func (s *ContextSignal[T]) Set(v T) { s.value = v }
-
-// UseContext subscribes to the named shared context (no-op server-side).
-func UseContext[T SharedContext](initial T) *ContextSignal[T] {
-	return &ContextSignal[T]{value: initial}
-}
-
-// ContextField is a per-field reactive signal for a generated context struct.
+// ObservableField is a per-field reactive observable for a generated context struct.
 // Server-side stub — no broadcast, no effect tracking.
-type ContextField[T any] struct{ sig *Signal[T] }
+type ObservableField[T any] struct{ sig *Observable[T] }
 
-// NewContextField creates a ContextField with the given initial value.
-func NewContextField[T any](initial T) *ContextField[T] {
-	return &ContextField[T]{sig: &Signal[T]{value: initial}}
+// NewObservableField creates a ContextField with the given initial value.
+func NewObservableField[T any](initial T) *ObservableField[T] {
+	return &ObservableField[T]{sig: &Observable[T]{value: initial}}
 }
-func (f *ContextField[T]) SetBroadcast(fn func()) {}
-func (f *ContextField[T]) Get() T                 { return f.sig.Get() }
-func (f *ContextField[T]) Peek() T                { return f.sig.value }
-func (f *ContextField[T]) Set(v T)                { f.sig.value = v }
-func (f *ContextField[T]) ApplyExternal(v T)      { f.sig.Set(v) }
+func (f *ObservableField[T]) SetBroadcast(fn func()) {}
+func (f *ObservableField[T]) Get() T                 { return f.sig.Get() }
+func (f *ObservableField[T]) Peek() T                { return f.sig.value }
+func (f *ObservableField[T]) Set(v T)                { f.sig.value = v }
+func (f *ObservableField[T]) ApplyExternal(v T)      { f.sig.Set(v) }
 
-func RequestCtxSet(keyName, encoded string)              {}
-func ListenCtxSetReq(keyName string, fn func(string))    {}
-func PingCtxManager(keyName string)                      {}
-func ListenCtxOnline(keyName string, fn func(string))    {}
-func PingUntilOnline(keyName string, isOnline func() bool) {}

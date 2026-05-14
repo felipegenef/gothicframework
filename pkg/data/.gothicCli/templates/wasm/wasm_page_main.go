@@ -36,7 +36,7 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 
 {{end}}
 {{range .CtxTypes}}type {{.TypeName}} struct {
-{{range .Fields}}	{{.Name}} *ContextField[{{.Type}}]
+{{range .Fields}}	{{.Name}} *ObservableField[{{.Type}}]
 {{end}}	_online  bool
 	_pending string
 }
@@ -44,7 +44,7 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 {{end}}
 {{range .WasmFuncs}}{{$fn := .}}func {{.CtorName}}(initial ...{{.StructName}}) *{{.TypeName}} {
 	ctx := &{{.TypeName}}{
-{{range .Fields}}		{{.Name}}: NewContextField({{$fn.StructName}}{}.{{.Name}}),
+{{range .Fields}}		{{.Name}}: NewObservableField({{$fn.StructName}}{}.{{.Name}}),
 {{end}}	}
 	broadcast := func() {
 		e := NewEncoder(64)
