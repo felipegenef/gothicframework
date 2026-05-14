@@ -405,6 +405,11 @@ func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 		return fmt.Errorf("wasm: mkdir %s: %w", outDir, err)
 	}
 
+	// Build context manager WASMs first (must be present before page WASMs that use them).
+	if err := h.GenerateContextManagers(outDir); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm: context manager build failed: %v\n", err)
+	}
+
 	g, ctx := errgroup.WithContext(context.Background())
 	sem := semaphore.NewWeighted(int64(runtime.NumCPU()))
 	for _, page := range pages {
@@ -835,6 +840,8 @@ func generateContextTypeStructs(structs []structInfo) string {
 		for _, f := range s.Fields {
 			sb.WriteString(fmt.Sprintf("\t%s *ContextField[%s]\n", f.Name, f.Type))
 		}
+		sb.WriteString("\t_online  bool\n")
+		sb.WriteString("\t_pending string\n")
 		sb.WriteString("}\n\n")
 	}
 	return sb.String()
@@ -856,19 +863,13 @@ func generateWasmContextFuncs(structs []structInfo) string {
 
 		// Constructor: XxxContext(initial ...Xxx) *xxxContext
 		sb.WriteString(fmt.Sprintf("func %s(initial ...%s) *%s {\n", ctor, s.Name, typ))
-		// Resolve initial value: from arg, context store, or zero.
-		sb.WriteString(fmt.Sprintf("\tvar _z %s\n", s.Name))
-		sb.WriteString("\tif len(initial) > 0 { _z = initial[0] }\n")
-		sb.WriteString(fmt.Sprintf("\tif stored, ok := ReadCtxStore(%q); ok {\n", keyName))
-		sb.WriteString(fmt.Sprintf("\t\t_z = _decode_%s(&Decoder{Buf: HexDecode(stored)})\n", s.Name))
-		sb.WriteString("\t}\n")
 		sb.WriteString(fmt.Sprintf("\tctx := &%s{\n", typ))
 		for _, f := range s.Fields {
-			sb.WriteString(fmt.Sprintf("\t\t%s: NewContextField(_z.%s),\n", f.Name, f.Name))
+			sb.WriteString(fmt.Sprintf("\t\t%s: NewContextField(%s{}.%s),\n", f.Name, s.Name, f.Name))
 		}
 		sb.WriteString("\t}\n")
 
-		// broadcast closure — uses Peek() so it does not accidentally track deps
+		// broadcast closure — queues if offline, dispatches if online
 		sb.WriteString("\tbroadcast := func() {\n")
 		sb.WriteString("\t\te := NewEncoder(64)\n")
 		sb.WriteString(fmt.Sprintf("\t\t_encode_%s(%s{\n", s.Name, s.Name))
@@ -876,29 +877,54 @@ func generateWasmContextFuncs(structs []structInfo) string {
 			sb.WriteString(fmt.Sprintf("\t\t\t%s: ctx.%s.Peek(),\n", f.Name, f.Name))
 		}
 		sb.WriteString("\t\t}, e)\n")
-		sb.WriteString(fmt.Sprintf("\t\tBroadcastCtxEncoded(%q, HexEncode(e.Buf))\n", keyName))
+		sb.WriteString("\t\tencoded := HexEncode(e.Buf)\n")
+		sb.WriteString("\t\tif ctx._online {\n")
+		sb.WriteString(fmt.Sprintf("\t\t\tRequestCtxSet(%q, encoded)\n", keyName))
+		sb.WriteString("\t\t} else {\n")
+		sb.WriteString("\t\t\tctx._pending = encoded\n")
+		sb.WriteString("\t\t}\n")
 		sb.WriteString("\t}\n")
 		for _, f := range s.Fields {
 			sb.WriteString(fmt.Sprintf("\tctx.%s.SetBroadcast(broadcast)\n", f.Name))
 		}
 
-		// cross-module listener
+		// online ack handler — syncs state and flushes any pending request
+		sb.WriteString(fmt.Sprintf("\tListenCtxOnline(%q, func(detail string) {\n", keyName))
+		sb.WriteString(fmt.Sprintf("\t\tdecoded := _decode_%s(&Decoder{Buf: HexDecode(detail)})\n", s.Name))
+		for _, f := range s.Fields {
+			sb.WriteString(fmt.Sprintf("\t\tctx.%s.ApplyExternal(decoded.%s)\n", f.Name, f.Name))
+		}
+		sb.WriteString("\t\tif !ctx._online {\n")
+		sb.WriteString("\t\t\tctx._online = true\n")
+		sb.WriteString("\t\t\tif ctx._pending != \"\" {\n")
+		sb.WriteString(fmt.Sprintf("\t\t\t\tRequestCtxSet(%q, ctx._pending)\n", keyName))
+		sb.WriteString("\t\t\t\tctx._pending = \"\"\n")
+		sb.WriteString("\t\t\t}\n")
+		sb.WriteString("\t\t}\n")
+		sb.WriteString("\t})\n")
+
+		// ongoing broadcast listener
 		sb.WriteString(fmt.Sprintf("\tListenCtxEvent(%q, func(detail string) {\n", keyName))
 		sb.WriteString(fmt.Sprintf("\t\tdecoded := _decode_%s(&Decoder{Buf: HexDecode(detail)})\n", s.Name))
 		for _, f := range s.Fields {
 			sb.WriteString(fmt.Sprintf("\t\tctx.%s.ApplyExternal(decoded.%s)\n", f.Name, f.Name))
 		}
 		sb.WriteString("\t})\n")
+
+		// retry ping until the manager acks online
+		sb.WriteString(fmt.Sprintf("\tPingUntilOnline(%q, func() bool { return ctx._online })\n", keyName))
 		sb.WriteString("\treturn ctx\n}\n\n")
 
-		// Set method: update all fields at once + single broadcast
+		// Set method: queues if offline, dispatches if online
 		sb.WriteString(fmt.Sprintf("func (c *%s) Set(v %s) {\n", typ, s.Name))
-		for _, f := range s.Fields {
-			sb.WriteString(fmt.Sprintf("\tc.%s.ApplyExternal(v.%s)\n", f.Name, f.Name))
-		}
 		sb.WriteString("\te := NewEncoder(64)\n")
 		sb.WriteString(fmt.Sprintf("\t_encode_%s(v, e)\n", s.Name))
-		sb.WriteString(fmt.Sprintf("\tBroadcastCtxEncoded(%q, HexEncode(e.Buf))\n", keyName))
+		sb.WriteString("\tencoded := HexEncode(e.Buf)\n")
+		sb.WriteString("\tif c._online {\n")
+		sb.WriteString(fmt.Sprintf("\t\tRequestCtxSet(%q, encoded)\n", keyName))
+		sb.WriteString("\t} else {\n")
+		sb.WriteString("\t\tc._pending = encoded\n")
+		sb.WriteString("\t}\n")
 		sb.WriteString("}\n\n")
 	}
 	return sb.String()
@@ -925,9 +951,6 @@ func generateServerContextFuncs(structs []structInfo) string {
 		sb.WriteString("\t}\n}\n\n")
 
 		sb.WriteString(fmt.Sprintf("func (c *%s) Set(v %s) {\n", typ, s.Name))
-		for _, f := range s.Fields {
-			sb.WriteString(fmt.Sprintf("\tc.%s.ApplyExternal(v.%s)\n", f.Name, f.Name))
-		}
 		sb.WriteString("}\n\n")
 	}
 	return sb.String()
@@ -962,20 +985,188 @@ func writeContextKeyStubs(structs []structInfo, pkgName, keyVars, contextTypes s
 		return
 	}
 
+	// Check if any struct has a shared-context key (needs mount helpers).
+	var hasCtx bool
+	for _, s := range structs {
+		if s.KeyName != "" {
+			hasCtx = true
+			break
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString("// Code generated by gothicframework — DO NOT EDIT.\n\n")
 	sb.WriteString("package " + pkgName + "\n\n")
-	sb.WriteString("import . \"github.com/felipegenef/gothicframework/pkg/wasm\"\n\n")
+	if hasCtx {
+		sb.WriteString("import (\n")
+		sb.WriteString("\t. \"github.com/felipegenef/gothicframework/pkg/wasm\"\n")
+		sb.WriteString("\t\"github.com/a-h/templ\"\n")
+		sb.WriteString("\troutes \"github.com/felipegenef/gothicframework/pkg/helpers/routes\"\n")
+		sb.WriteString(")\n\n")
+	} else {
+		sb.WriteString("import . \"github.com/felipegenef/gothicframework/pkg/wasm\"\n\n")
+	}
 	sb.WriteString(generateCodecs(structs))
 	sb.WriteString(keyVars)
 	sb.WriteString(contextTypes)
 	sb.WriteString(generateServerContextFuncs(structs))
+	if hasCtx {
+		for _, s := range structs {
+			if s.KeyName == "" {
+				continue
+			}
+			mountFn := "Add" + ctxFuncName(s.Name)
+			wasmName := "ctx-" + s.KeyName
+			sb.WriteString(fmt.Sprintf("func %s() templ.Component {\n", mountFn))
+			sb.WriteString(fmt.Sprintf("\treturn routes.ContextManagerComponent(%q)\n", wasmName))
+			sb.WriteString("}\n\n")
+		}
+	}
 	content := []byte(sb.String())
 	// Only write if content changed — prevents hot-reload from seeing a spurious file change
 	// and triggering an infinite rebuild loop.
 	if existing, err := os.ReadFile("src/context/context_gen.go"); err != nil || !bytes.Equal(existing, content) {
 		_ = os.WriteFile("src/context/context_gen.go", content, 0644)
 	}
+}
+
+// generateContextManagerMain returns the full main.go source for a context manager WASM.
+// The manager owns the canonical state: it listens for set-requests, applies them,
+// and broadcasts the updated value to all subscriber modules.
+func generateContextManagerMain(s structInfo, snippets []string, codecSrc string) string {
+	var sb strings.Builder
+	sb.WriteString("//go:build js && wasm\n")
+	sb.WriteString("// Code generated for context manager — DO NOT EDIT.\n\n")
+	sb.WriteString("package main\n\n")
+	sb.WriteString("import (\n\t. \"wasm-runtime/runtime\"\n)\n\n")
+	if codecSrc != "" {
+		sb.WriteString(codecSrc)
+	}
+	for _, snippet := range snippets {
+		sb.WriteString(snippet)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString(fmt.Sprintf("var _ctxState %s\n\n", s.Name))
+	// helper: encode current state and broadcast online ack
+	sb.WriteString("func _broadcastOnline() {\n")
+	sb.WriteString("\te := NewEncoder(64)\n")
+	sb.WriteString(fmt.Sprintf("\t_encode_%s(_ctxState, e)\n", s.Name))
+	sb.WriteString(fmt.Sprintf("\tBroadcastCtxOnline(%q, HexEncode(e.Buf))\n", s.KeyName))
+	sb.WriteString("}\n\n")
+	sb.WriteString("func main() {\n")
+	// init from JS store (state persists across page navigations / late loads)
+	sb.WriteString(fmt.Sprintf("\tif stored, ok := ReadCtxStore(%q); ok {\n", s.KeyName))
+	sb.WriteString(fmt.Sprintf("\t\t_ctxState = _decode_%s(&Decoder{Buf: HexDecode(stored)})\n", s.Name))
+	sb.WriteString("\t}\n")
+	// announce online immediately — consumers already listening receive this
+	sb.WriteString("\t_broadcastOnline()\n")
+	// respond to pings from consumers that spawned before or after us
+	sb.WriteString(fmt.Sprintf("\tListenCtxPing(%q, func() { _broadcastOnline() })\n", s.KeyName))
+	// process state-update requests; apply then broadcast to all consumers
+	sb.WriteString(fmt.Sprintf("\tListenCtxSetReq(%q, func(detail string) {\n", s.KeyName))
+	sb.WriteString(fmt.Sprintf("\t\t_ctxState = _decode_%s(&Decoder{Buf: HexDecode(detail)})\n", s.Name))
+	sb.WriteString("\t\te := NewEncoder(64)\n")
+	sb.WriteString(fmt.Sprintf("\t\t_encode_%s(_ctxState, e)\n", s.Name))
+	sb.WriteString(fmt.Sprintf("\t\tBroadcastCtxEncoded(%q, HexEncode(e.Buf))\n", s.KeyName))
+	sb.WriteString("\t})\n")
+	sb.WriteString("\tselect {}\n}\n")
+	return sb.String()
+}
+
+// GenerateContextManagers builds one context-manager WASM per context struct into outDir.
+// These are small headless WASMs that own canonical state and serialize writes.
+func (h *WasmHelper) GenerateContextManagers(outDir string) error {
+	snippets, _, structs := collectContextSnippets()
+	var hasCtx bool
+	for _, s := range structs {
+		if s.KeyName != "" {
+			hasCtx = true
+			break
+		}
+	}
+	if !hasCtx {
+		return nil
+	}
+	// Manager only needs the codecs, not the consumer-side context types/funcs.
+	managerCodecSrc := generateCodecs(structs)
+
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return fmt.Errorf("wasm: mkdir %s: %w", outDir, err)
+	}
+	for _, s := range structs {
+		if s.KeyName == "" {
+			continue
+		}
+		if err := h.buildContextManager(s, snippets, managerCodecSrc, outDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, managerCodecSrc, outDir string) error {
+	tempModDir, err := os.MkdirTemp("", "tinygo-ctx-*")
+	if err != nil {
+		return fmt.Errorf("wasm: mkdirtemp: %w", err)
+	}
+	defer os.RemoveAll(tempModDir)
+
+	if err := wasmruntime.ExtractRuntime(tempModDir); err != nil {
+		return fmt.Errorf("wasm: extract runtime: %w", err)
+	}
+
+	genDir, err := os.MkdirTemp(tempModDir, ".gen-")
+	if err != nil {
+		return fmt.Errorf("wasm: mkdirtemp gen: %w", err)
+	}
+
+	mainSrc := generateContextManagerMain(s, snippets, managerCodecSrc)
+	mainPath := filepath.Join(genDir, "main.go")
+	if err := os.WriteFile(mainPath, []byte(mainSrc), 0644); err != nil {
+		return fmt.Errorf("wasm: write context manager main.go: %w", err)
+	}
+
+	wasmName := "ctx-" + s.KeyName
+	absOutFile, err := filepath.Abs(filepath.Join(outDir, wasmName+".wasm"))
+	if err != nil {
+		return err
+	}
+
+	tinygo := h.TinyGoBinary()
+	if h.ConfigOverride != "" {
+		tinygo = h.ConfigOverride
+	}
+
+	pkg := "./" + filepath.Base(genDir) + "/"
+	cmd := exec.Command(tinygo, "build", "-no-debug", "-opt=z", "-o", absOutFile, "-target", "wasm", pkg)
+	cmd.Dir = tempModDir
+	cmd.Env = append(os.Environ(), h.Environ()...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("wasm: tinygo build %s: %w", wasmName, err)
+	}
+
+	wasmSize, _ := fileSize(absOutFile)
+
+	if _, err := exec.LookPath("wasm-opt"); err == nil {
+		tmp := absOutFile + ".opt"
+		if opt := exec.Command("wasm-opt", "-Oz", "--strip-debug", "-o", tmp, absOutFile); opt.Run() == nil {
+			os.Rename(tmp, absOutFile)
+		} else {
+			os.Remove(tmp)
+		}
+	}
+
+	gzPath := absOutFile + ".gz"
+	if err := compressWasm(absOutFile, gzPath); err != nil {
+		return fmt.Errorf("wasm: gzip %s: %w", wasmName, err)
+	}
+	os.Remove(absOutFile)
+
+	gzSize, _ := fileSize(gzPath)
+	fmt.Printf("wasm: %s → %s → %s (gzip)\n", wasmName, formatBytes(wasmSize), formatBytes(gzSize))
+	return nil
 }
 
 func writeWasmMain(src, body string, stdImports []string, ctxSnippets []string, codecSrc string, dest string) error {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"syscall/js"
+	"time"
 )
 
 // GothicSharedContext is a zero-size marker type embedded in context structs.
@@ -283,9 +284,11 @@ func (f *ContextField[T]) Get() T { return f.sig.Get() }
 // Used internally by broadcast closures to read sibling field values safely.
 func (f *ContextField[T]) Peek() T { return f.sig.value }
 
-// Set updates the value, notifies local subscribers, and broadcasts to other modules.
+// Set sends a set-request to the context manager WASM.
+// The local value is silently updated so Peek() returns the correct value during
+// encoding, but subscribers are NOT notified until the manager broadcasts back.
 func (f *ContextField[T]) Set(v T) {
-	f.sig.Set(v)
+	f.sig.value = v
 	f.broadcast()
 }
 
@@ -332,6 +335,82 @@ func ListenCtxEvent(keyName string, fn func(string)) {
 	})
 	keep = append(keep, listener)
 	js.Global().Get("document").Call("addEventListener", "gothic:context:"+keyName, listener)
+}
+
+// RequestCtxSet dispatches a set-request to the context manager WASM for this key.
+// The manager is the sole writer: it applies the update and broadcasts back.
+func RequestCtxSet(keyName, encoded string) {
+	init := js.Global().Get("Object").New()
+	init.Set("detail", encoded)
+	event := js.Global().Get("CustomEvent").New("gothic:ctx-req:"+keyName, init)
+	js.Global().Get("document").Call("dispatchEvent", event)
+}
+
+// ListenCtxSetReq registers a handler for incoming set-requests on a context manager WASM.
+func ListenCtxSetReq(keyName string, fn func(string)) {
+	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) > 0 {
+			detail := args[0].Get("detail")
+			if !detail.IsUndefined() && !detail.IsNull() {
+				fn(detail.String())
+			}
+		}
+		return nil
+	})
+	keep = append(keep, listener)
+	js.Global().Get("document").Call("addEventListener", "gothic:ctx-req:"+keyName, listener)
+}
+
+// PingCtxManager dispatches a ping to the context manager asking for an online ack.
+func PingCtxManager(keyName string) {
+	init := js.Global().Get("Object").New()
+	event := js.Global().Get("CustomEvent").New("gothic:ctx-ping:"+keyName, init)
+	js.Global().Get("document").Call("dispatchEvent", event)
+}
+
+// ListenCtxOnline registers a handler that receives the manager's online ack with current state.
+// Fires once on manager startup and on every ping response.
+func ListenCtxOnline(keyName string, fn func(string)) {
+	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) > 0 {
+			detail := args[0].Get("detail")
+			if !detail.IsUndefined() && !detail.IsNull() {
+				fn(detail.String())
+			}
+		}
+		return nil
+	})
+	keep = append(keep, listener)
+	js.Global().Get("document").Call("addEventListener", "gothic:ctx-online:"+keyName, listener)
+}
+
+// ListenCtxPing registers a handler for incoming pings on the context manager WASM.
+func ListenCtxPing(keyName string, fn func()) {
+	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		fn()
+		return nil
+	})
+	keep = append(keep, listener)
+	js.Global().Get("document").Call("addEventListener", "gothic:ctx-ping:"+keyName, listener)
+}
+
+// BroadcastCtxOnline dispatches the online ack to all consumer WASMs for this key.
+func BroadcastCtxOnline(keyName, encoded string) {
+	init := js.Global().Get("Object").New()
+	init.Set("detail", encoded)
+	event := js.Global().Get("CustomEvent").New("gothic:ctx-online:"+keyName, init)
+	js.Global().Get("document").Call("dispatchEvent", event)
+}
+
+// PingUntilOnline retries PingCtxManager every 50 ms until isOnline returns true.
+// Runs in its own goroutine so it doesn't block the caller.
+func PingUntilOnline(keyName string, isOnline func() bool) {
+	go func() {
+		for !isOnline() {
+			PingCtxManager(keyName)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
 }
 
 // CustomKey returns a ContextKey with user-supplied encode/decode functions.

@@ -170,6 +170,17 @@ func injectWasmBootstrap(html []byte, wasmName string) []byte {
 	return append(html, []byte(script)...)
 }
 
+// emptyComponent renders nothing — used as the inner component for context managers.
+type emptyComponent struct{}
+
+func (emptyComponent) Render(_ context.Context, _ io.Writer) error { return nil }
+
+// ContextManagerComponent returns a templ.Component that loads the named context-manager
+// WASM inline (no HTMX round-trip). Drop it in any layout or page with @wasm.AddPageContext().
+func ContextManagerComponent(wasmName string) templ.Component {
+	return &wasmInjectedComponent{inner: emptyComponent{}, wasmName: wasmName}
+}
+
 func (config *RouteConfig[T]) resolveHandler(component func(T) templ.Component) http.HandlerFunc {
 	switch config.Type {
 	case STATIC:

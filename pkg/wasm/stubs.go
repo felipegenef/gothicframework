@@ -298,5 +298,11 @@ func NewContextField[T any](initial T) *ContextField[T] {
 func (f *ContextField[T]) SetBroadcast(fn func()) {}
 func (f *ContextField[T]) Get() T                 { return f.sig.Get() }
 func (f *ContextField[T]) Peek() T                { return f.sig.value }
-func (f *ContextField[T]) Set(v T)                { f.sig.Set(v) }
+func (f *ContextField[T]) Set(v T)                { f.sig.value = v }
 func (f *ContextField[T]) ApplyExternal(v T)      { f.sig.Set(v) }
+
+func RequestCtxSet(keyName, encoded string)              {}
+func ListenCtxSetReq(keyName string, fn func(string))    {}
+func PingCtxManager(keyName string)                      {}
+func ListenCtxOnline(keyName string, fn func(string))    {}
+func PingUntilOnline(keyName string, isOnline func() bool) {}

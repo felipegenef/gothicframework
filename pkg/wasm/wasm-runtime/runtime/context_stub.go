@@ -200,6 +200,14 @@ func UseContext[T SharedContext](key ContextKey[T], initial T) *ContextSignal[T]
 	return &ContextSignal[T]{inner: &Signal[T]{value: initial}}
 }
 
+func RequestCtxSet(keyName, encoded string)              {}
+func ListenCtxSetReq(keyName string, fn func(string))    {}
+func PingCtxManager(keyName string)                      {}
+func ListenCtxOnline(keyName string, fn func(string))    {}
+func ListenCtxPing(keyName string, fn func())            {}
+func BroadcastCtxOnline(keyName, encoded string)         {}
+func PingUntilOnline(keyName string, isOnline func() bool) {}
+
 // ContextField stub — no-op broadcast and tracking for server-side compilation.
 type ContextField[T any] struct{ sig *Signal[T] }
 
@@ -209,7 +217,7 @@ func NewContextField[T any](initial T) *ContextField[T] {
 func (f *ContextField[T]) SetBroadcast(fn func())      {}
 func (f *ContextField[T]) Get() T                      { return f.sig.Get() }
 func (f *ContextField[T]) Peek() T                     { return f.sig.value }
-func (f *ContextField[T]) Set(v T)                     { f.sig.Set(v) }
+func (f *ContextField[T]) Set(v T)                     { f.sig.value = v }
 func (f *ContextField[T]) ApplyExternal(v T)           { f.sig.Set(v) }
 func (f *ContextField[T]) addEffect(_ *Effect)         {}
 func (f *ContextField[T]) removeEffect(_ *Effect)      {}
