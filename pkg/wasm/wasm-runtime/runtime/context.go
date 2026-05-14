@@ -258,6 +258,82 @@ func UseContext[T SharedContext](key ContextKey[T], initial T) *ContextSignal[T]
 // This stub exists so server-side code compiles; WASM code never calls it directly.
 func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name} }
 
+// ── Per-field context signals ─────────────────────────────────────────────────
+
+// ContextField is a reactive signal bound to one field of a shared context struct.
+// It behaves like *Signal[T] but Set also broadcasts the full context to other modules.
+// Pass *ContextField as a dep in UseEffect to react to individual property changes.
+type ContextField[T any] struct {
+	sig       *Signal[T]
+	broadcast func()
+}
+
+// NewContextField creates a ContextField with the given initial value.
+func NewContextField[T any](initial T) *ContextField[T] {
+	return &ContextField[T]{sig: &Signal[T]{value: initial}}
+}
+
+// SetBroadcast wires the broadcast callback called whenever Set updates this field.
+func (f *ContextField[T]) SetBroadcast(fn func()) { f.broadcast = fn }
+
+// Get returns the current value, auto-registering as a dep of any running effect.
+func (f *ContextField[T]) Get() T { return f.sig.Get() }
+
+// Peek returns the current value without registering as an effect dependency.
+// Used internally by broadcast closures to read sibling field values safely.
+func (f *ContextField[T]) Peek() T { return f.sig.value }
+
+// Set updates the value, notifies local subscribers, and broadcasts to other modules.
+func (f *ContextField[T]) Set(v T) {
+	f.sig.Set(v)
+	f.broadcast()
+}
+
+// ApplyExternal updates value and notifies subscribers without triggering broadcast.
+// Used by generated context listeners and Set-all methods to avoid redundant events.
+func (f *ContextField[T]) ApplyExternal(v T) {
+	f.sig.value = v
+	f.sig.notifyAll()
+}
+
+func (f *ContextField[T]) addEffect(e *Effect)    { f.sig.addEffect(e) }
+func (f *ContextField[T]) removeEffect(e *Effect) { f.sig.removeEffect(e) }
+
+// ── Cross-module context helpers ──────────────────────────────────────────────
+
+// _readContextStore reads the encoded context value from the shared JS store.
+func _readContextStore(keyName string) (string, bool) {
+	v := ensureContextStore().Get(keyName)
+	if v.IsUndefined() || v.IsNull() {
+		return "", false
+	}
+	return v.String(), true
+}
+
+// _broadcastContextEncoded writes encoded to the JS store and dispatches a CustomEvent.
+func _broadcastContextEncoded(keyName, encoded string) {
+	ensureContextStore().Set(keyName, encoded)
+	init := js.Global().Get("Object").New()
+	init.Set("detail", encoded)
+	event := js.Global().Get("CustomEvent").New("gothic:context:"+keyName, init)
+	js.Global().Get("document").Call("dispatchEvent", event)
+}
+
+// _listenContextEvent registers a cross-module listener for context updates.
+func _listenContextEvent(keyName string, fn func(string)) {
+	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) > 0 {
+			detail := args[0].Get("detail")
+			if !detail.IsUndefined() && !detail.IsNull() {
+				fn(detail.String())
+			}
+		}
+		return nil
+	})
+	keep = append(keep, listener)
+	js.Global().Get("document").Call("addEventListener", "gothic:context:"+keyName, listener)
+}
+
 // CustomKey returns a ContextKey with user-supplied encode/decode functions.
 // Use this to avoid the encoding/json dependency when JsonKey's binary size is a concern.
 func CustomKey[T any](name string, encode func(T) string, decode func(string) T) ContextKey[T] {

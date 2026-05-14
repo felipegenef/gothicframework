@@ -279,10 +279,24 @@ func unhex(c byte) byte {
 // ContextSignal server-side stub — same API as the WASM implementation, no-op broadcast.
 type ContextSignal[T any] struct{ value T }
 
-func (s *ContextSignal[T]) Get() T { return s.value }
+func (s *ContextSignal[T]) Get() T  { return s.value }
 func (s *ContextSignal[T]) Set(v T) { s.value = v }
 
 // UseContext subscribes to the named shared context (no-op server-side).
 func UseContext[T SharedContext](initial T) *ContextSignal[T] {
 	return &ContextSignal[T]{value: initial}
 }
+
+// ContextField is a per-field reactive signal for a generated context struct.
+// Server-side stub — no broadcast, no effect tracking.
+type ContextField[T any] struct{ sig *Signal[T] }
+
+// NewContextField creates a ContextField with the given initial value.
+func NewContextField[T any](initial T) *ContextField[T] {
+	return &ContextField[T]{sig: &Signal[T]{value: initial}}
+}
+func (f *ContextField[T]) SetBroadcast(fn func()) {}
+func (f *ContextField[T]) Get() T                 { return f.sig.Get() }
+func (f *ContextField[T]) Peek() T                { return f.sig.value }
+func (f *ContextField[T]) Set(v T)                { f.sig.Set(v) }
+func (f *ContextField[T]) ApplyExternal(v T)      { f.sig.Set(v) }

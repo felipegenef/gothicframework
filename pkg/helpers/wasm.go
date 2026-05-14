@@ -781,10 +781,11 @@ func collectContextSnippets() (snippets []string, codecSrc string, structs []str
 	}
 
 	keyVars := generateKeyVars(allStructs)
-	codecSrc = generateCodecs(allStructs) + keyVars
+	contextTypes := generateContextTypeStructs(allStructs)
+	codecSrc = generateCodecs(allStructs) + keyVars + contextTypes + generateWasmContextFuncs(allStructs)
 
 	// Write server-side stubs so templ/Go server code compiles without the WASM-only main.go.
-	writeContextKeyStubs(allStructs, pkgName, keyVars)
+	writeContextKeyStubs(allStructs, pkgName, keyVars, contextTypes)
 
 	for _, f := range files {
 		src := f.src
@@ -812,22 +813,131 @@ func generateKeyVars(structs []structInfo) string {
 	return sb.String()
 }
 
-// rewriteContextCalls rewrites UseContext(X{...}) → UseContext(XKey, X{...}) in the
-// generated WASM main.go so TinyGo sees the explicit 2-arg call without any runtime type assertion.
+// generateContextTypeStructs produces a `type TContext struct { F *ContextField[T]; ... }`
+// declaration for every context struct (those with a KeyName).
+func generateContextTypeStructs(structs []structInfo) string {
+	var sb strings.Builder
+	for _, s := range structs {
+		if s.KeyName == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("type %sContext struct {\n", s.Name))
+		for _, f := range s.Fields {
+			sb.WriteString(fmt.Sprintf("\t%s *ContextField[%s]\n", f.Name, f.Type))
+		}
+		sb.WriteString("}\n\n")
+	}
+	return sb.String()
+}
+
+// generateWasmContextFuncs produces the WASM-side UseT and (c *TContext).Set functions
+// for each context struct. These are injected into the generated main.go (package main)
+// which dot-imports wasm-runtime/runtime, so all runtime helpers are in scope.
+func generateWasmContextFuncs(structs []structInfo) string {
+	var sb strings.Builder
+	for _, s := range structs {
+		if s.KeyName == "" {
+			continue
+		}
+		funcName := "Use" + s.Name
+		keyName := s.KeyName
+
+		// UseT function
+		sb.WriteString(fmt.Sprintf("func %s(initial %s) *%sContext {\n", funcName, s.Name, s.Name))
+		sb.WriteString("\tv := initial\n")
+		sb.WriteString(fmt.Sprintf("\tif stored, ok := _readContextStore(%q); ok {\n", keyName))
+		sb.WriteString(fmt.Sprintf("\t\tv = _decode_%s(&Decoder{Buf: hexDecode(stored)})\n", s.Name))
+		sb.WriteString("\t}\n")
+		sb.WriteString(fmt.Sprintf("\tctx := &%sContext{\n", s.Name))
+		for _, f := range s.Fields {
+			sb.WriteString(fmt.Sprintf("\t\t%s: NewContextField(v.%s),\n", f.Name, f.Name))
+		}
+		sb.WriteString("\t}\n")
+
+		// broadcast closure — uses Peek() so it doesn't accidentally track deps
+		sb.WriteString("\tbroadcast := func() {\n")
+		sb.WriteString("\t\te := NewEncoder(64)\n")
+		sb.WriteString(fmt.Sprintf("\t\t_encode_%s(%s{\n", s.Name, s.Name))
+		for _, f := range s.Fields {
+			sb.WriteString(fmt.Sprintf("\t\t\t%s: ctx.%s.Peek(),\n", f.Name, f.Name))
+		}
+		sb.WriteString("\t\t}, e)\n")
+		sb.WriteString(fmt.Sprintf("\t\t_broadcastContextEncoded(%q, hexEncode(e.Buf))\n", keyName))
+		sb.WriteString("\t}\n")
+
+		for _, f := range s.Fields {
+			sb.WriteString(fmt.Sprintf("\tctx.%s.SetBroadcast(broadcast)\n", f.Name))
+		}
+
+		// cross-module listener
+		sb.WriteString(fmt.Sprintf("\t_listenContextEvent(%q, func(detail string) {\n", keyName))
+		sb.WriteString(fmt.Sprintf("\t\tdecoded := _decode_%s(&Decoder{Buf: hexDecode(detail)})\n", s.Name))
+		for _, f := range s.Fields {
+			sb.WriteString(fmt.Sprintf("\t\tctx.%s.ApplyExternal(decoded.%s)\n", f.Name, f.Name))
+		}
+		sb.WriteString("\t})\n")
+		sb.WriteString("\treturn ctx\n}\n\n")
+
+		// Set method: update all fields at once + single broadcast
+		sb.WriteString(fmt.Sprintf("func (c *%sContext) Set(v %s) {\n", s.Name, s.Name))
+		for _, f := range s.Fields {
+			sb.WriteString(fmt.Sprintf("\tc.%s.ApplyExternal(v.%s)\n", f.Name, f.Name))
+		}
+		sb.WriteString("\te := NewEncoder(64)\n")
+		sb.WriteString(fmt.Sprintf("\t_encode_%s(v, e)\n", s.Name))
+		sb.WriteString(fmt.Sprintf("\t_broadcastContextEncoded(%q, hexEncode(e.Buf))\n", keyName))
+		sb.WriteString("}\n\n")
+	}
+	return sb.String()
+}
+
+// generateServerContextFuncs produces server-side stub UseT and (c *TContext).Set for
+// each context struct. These go into context_gen.go (no JS, no broadcast).
+func generateServerContextFuncs(structs []structInfo) string {
+	var sb strings.Builder
+	for _, s := range structs {
+		if s.KeyName == "" {
+			continue
+		}
+		funcName := "Use" + s.Name
+
+		sb.WriteString(fmt.Sprintf("func %s(initial %s) *%sContext {\n", funcName, s.Name, s.Name))
+		sb.WriteString(fmt.Sprintf("\treturn &%sContext{\n", s.Name))
+		for _, f := range s.Fields {
+			sb.WriteString(fmt.Sprintf("\t\t%s: NewContextField(initial.%s),\n", f.Name, f.Name))
+		}
+		sb.WriteString("\t}\n}\n\n")
+
+		sb.WriteString(fmt.Sprintf("func (c *%sContext) Set(v %s) {\n", s.Name, s.Name))
+		for _, f := range s.Fields {
+			sb.WriteString(fmt.Sprintf("\tc.%s.ApplyExternal(v.%s)\n", f.Name, f.Name))
+		}
+		sb.WriteString("}\n\n")
+	}
+	return sb.String()
+}
+
+// rewriteContextCalls rewrites UseContext(X{...}) → UseX(X{...}) in the generated WASM
+// main.go. The generated UseX function is defined in codecSrc with the full WASM impl.
+// This also handles any old 2-arg form left by a previous rewrite pass.
 func rewriteContextCalls(src string, structs []structInfo) string {
 	for _, s := range structs {
 		if s.KeyName == "" {
 			continue
 		}
-		key := s.Name + "Key"
-		src = strings.ReplaceAll(src, "UseContext("+s.Name, "UseContext("+key+", "+s.Name)
+		newFn := "Use" + s.Name
+		// Handle old 2-arg form first (in case source was already partially rewritten).
+		src = strings.ReplaceAll(src, "UseContext("+s.Name+"Key, "+s.Name, newFn+"("+s.Name)
+		// Handle the canonical 1-arg user form.
+		src = strings.ReplaceAll(src, "UseContext("+s.Name, newFn+"("+s.Name)
 	}
 	return src
 }
 
-// writeContextKeyStubs generates src/context/context_gen.go with server-side
-// codec functions and key vars so server/templ code compiles without the WASM-only main.go.
-func writeContextKeyStubs(structs []structInfo, pkgName, keyVars string) {
+// writeContextKeyStubs generates src/context/context_gen.go with server-side codec
+// functions, key vars, per-field context types, and UseT stub functions so server/templ
+// code compiles without the WASM-only main.go.
+func writeContextKeyStubs(structs []structInfo, pkgName, keyVars, contextTypes string) {
 	if len(structs) == 0 {
 		_ = os.Remove("src/context/context_gen.go")
 		return
@@ -839,6 +949,8 @@ func writeContextKeyStubs(structs []structInfo, pkgName, keyVars string) {
 	sb.WriteString("import . \"github.com/felipegenef/gothicframework/pkg/wasm\"\n\n")
 	sb.WriteString(generateCodecs(structs))
 	sb.WriteString(keyVars)
+	sb.WriteString(contextTypes)
+	sb.WriteString(generateServerContextFuncs(structs))
 	content := []byte(sb.String())
 	// Only write if content changed — prevents hot-reload from seeing a spurious file change
 	// and triggering an infinite rebuild loop.

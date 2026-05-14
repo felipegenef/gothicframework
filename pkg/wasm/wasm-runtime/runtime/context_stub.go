@@ -199,3 +199,17 @@ func (s *ContextSignal[T]) removeEffect(e *Effect) { s.inner.removeEffect(e) }
 func UseContext[T SharedContext](key ContextKey[T], initial T) *ContextSignal[T] {
 	return &ContextSignal[T]{inner: &Signal[T]{value: initial}}
 }
+
+// ContextField stub — no-op broadcast and tracking for server-side compilation.
+type ContextField[T any] struct{ sig *Signal[T] }
+
+func NewContextField[T any](initial T) *ContextField[T] {
+	return &ContextField[T]{sig: &Signal[T]{value: initial}}
+}
+func (f *ContextField[T]) SetBroadcast(fn func())      {}
+func (f *ContextField[T]) Get() T                      { return f.sig.Get() }
+func (f *ContextField[T]) Peek() T                     { return f.sig.value }
+func (f *ContextField[T]) Set(v T)                     { f.sig.Set(v) }
+func (f *ContextField[T]) ApplyExternal(v T)           { f.sig.Set(v) }
+func (f *ContextField[T]) addEffect(_ *Effect)         {}
+func (f *ContextField[T]) removeEffect(_ *Effect)      {}
