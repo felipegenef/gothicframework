@@ -18,8 +18,7 @@ import (
 // GothicSharedContext is a zero-size marker type embedded in context structs.
 // The CLI reads the name tag on this field to derive the context key name
 // and auto-generates the BinaryKey variable (e.g. var PageCtxKey = BinaryKey[PageCtx](...)).
-// Embedding it also satisfies the SharedContext constraint, which is required by
-// UseContext and UseSharedState.
+// Embedding it also satisfies the SharedContext constraint, which is required by UseContext.
 type GothicSharedContext struct{}
 
 func (GothicSharedContext) isGothicSharedContext() {}
@@ -172,18 +171,6 @@ func AutoKey[T any](name string) ContextKey[T] {
 	return ContextKey[T]{Name: name}
 }
 
-// SharedSignal server-side stub — same API as the WASM implementation, no-op broadcast.
-type SharedSignal[T any] struct{ value T }
-
-func (s *SharedSignal[T]) Get() T  { return s.value }
-func (s *SharedSignal[T]) Set(v T) { s.value = v }
-
-// UseSharedState returns a SharedSignal subscribed to the named context.
-// Calling Set propagates the value to all WASM modules sharing the same key.
-func UseSharedState[T SharedContext](key ContextKey[T], initial T) *SharedSignal[T] {
-	return &SharedSignal[T]{value: initial}
-}
-
 // Encoder writes a little-endian binary stream (server-side stub — mirrors runtime.Encoder).
 type Encoder struct{ Buf []byte }
 
@@ -289,7 +276,13 @@ func unhex(c byte) byte {
 }
 
 
-// UseContext subscribes to the named context and returns a local signal (no-op server-side).
-func UseContext[T SharedContext](key ContextKey[T], initial T) *Signal[T] {
-	return &Signal[T]{value: initial}
+// ContextSignal server-side stub — same API as the WASM implementation, no-op broadcast.
+type ContextSignal[T any] struct{ value T }
+
+func (s *ContextSignal[T]) Get() T { return s.value }
+func (s *ContextSignal[T]) Set(v T) { s.value = v }
+
+// UseContext subscribes to the named shared context (no-op server-side).
+func UseContext[T SharedContext](initial T) *ContextSignal[T] {
+	return &ContextSignal[T]{value: initial}
 }

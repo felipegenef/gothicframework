@@ -18,6 +18,9 @@ func (GothicSharedContext) isGothicSharedContext() {}
 // SharedContext is the compile-time constraint for context types.
 type SharedContext interface{ isGothicSharedContext() }
 
+// _gothicKeyRegistry maps context key names to their ContextKey (stored as any).
+// Populated by generated init() calls in the compiled WASM main.
+
 // ContextKey is a typed context identifier that carries its own codec.
 // T encodes the value type — provider and consumer must use the same key.
 // Construct via the factory functions (IntKey, StringKey, JsonKey, etc.),
@@ -195,46 +198,17 @@ func ensureContextStore() js.Value {
 // at startup (handles components that load after the provider already ran), then
 // listens for CustomEvents to update reactively. Use as a dep in UseEffect like
 // any other signal.
-func UseContext[T SharedContext](key ContextKey[T], initial T) *Signal[T] {
-	current := initial
-	v := ensureContextStore().Get(key.Name)
-	if !v.IsUndefined() && !v.IsNull() {
-		current = key.decode(v.String())
-	}
-
-	s := &Signal[T]{value: current}
-
-	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) > 0 {
-			detail := args[0].Get("detail")
-			if !detail.IsUndefined() && !detail.IsNull() {
-				s.Set(key.decode(detail.String()))
-			}
-		}
-		return nil
-	})
-	keep = append(keep, listener)
-	js.Global().Get("document").Call("addEventListener", "gothic:context:"+key.Name, listener)
-
-	return s
-}
-
-// ── SharedSignal / UseSharedState ─────────────────────────────────────────────
-
-// SharedSignal is a reactive signal whose Set broadcasts to all WASM modules
-// sharing the same ContextKey. Any module calling UseSharedState with the same
-// key can both read and write the value — there is no separate provider/consumer.
-type SharedSignal[T any] struct {
+// ContextSignal is a reactive signal bound to a shared context key.
+// Get/Set work like a regular signal, but Set also broadcasts the new value
+// to every other WASM module that called UseContext with the same key.
+type ContextSignal[T any] struct {
 	inner *Signal[T]
 	key   ContextKey[T]
 }
 
-func (s *SharedSignal[T]) Get() T { return s.inner.Get() }
+func (s *ContextSignal[T]) Get() T { return s.inner.Get() }
 
-// Set updates the local value, notifies local effects, writes the new value to
-// the JS context store, and dispatches a CustomEvent so every other WASM module
-// that called UseSharedState with the same key receives the update.
-func (s *SharedSignal[T]) Set(v T) {
+func (s *ContextSignal[T]) Set(v T) {
 	s.inner.value = v
 	s.inner.notifyAll()
 	encoded := s.key.encode(v)
@@ -245,47 +219,31 @@ func (s *SharedSignal[T]) Set(v T) {
 	js.Global().Get("document").Call("dispatchEvent", event)
 }
 
-// Implements dependency so *SharedSignal[T] works as a UseEffect dep.
-func (s *SharedSignal[T]) addEffect(e *Effect)    { s.inner.addEffect(e) }
-func (s *SharedSignal[T]) removeEffect(e *Effect) { s.inner.removeEffect(e) }
+func (s *ContextSignal[T]) addEffect(e *Effect)    { s.inner.addEffect(e) }
+func (s *ContextSignal[T]) removeEffect(e *Effect) { s.inner.removeEffect(e) }
 
-// UseSharedState subscribes to the named context and returns a *SharedSignal[T].
-// Unlike UseContext, calling Set on the returned signal propagates the new value
-// to all other WASM modules sharing the same key.
-// The module that calls Set first becomes the effective source of truth for that update.
-//
-// Example (any module — page or component):
-//
-//	cart := UseSharedState(CartItemsKey, []CartItem{})
-//
-//	UseEffect(func() {
-//	    SetText("cart-count", strconv.Itoa(len(cart.Get())))
-//	}, cart)
-//
-//	Register("clearCart", func() {
-//	    cart.Set([]CartItem{})  // propagates to every other module instantly
-//	})
-func UseSharedState[T SharedContext](key ContextKey[T], initial T) *SharedSignal[T] {
+// UseContext subscribes to the named shared context and returns a *ContextSignal[T].
+// Reading the current value and reacting to updates from other modules is automatic.
+// Calling Set broadcasts the new value to every other WASM module sharing the same key.
+func UseContext[T SharedContext](key ContextKey[T], initial T) *ContextSignal[T] {
 	current := initial
 	v := ensureContextStore().Get(key.Name)
 	if !v.IsUndefined() && !v.IsNull() {
 		current = key.decode(v.String())
 	}
 
-	ss := &SharedSignal[T]{
+	cs := &ContextSignal[T]{
 		inner: &Signal[T]{value: current},
 		key:   key,
 	}
 
-	// Listen for writes from other modules.
 	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		if len(args) > 0 {
 			detail := args[0].Get("detail")
 			if !detail.IsUndefined() && !detail.IsNull() {
 				decoded := key.decode(detail.String())
-				// Update local value and notify local effects without re-broadcasting.
-				ss.inner.value = decoded
-				ss.inner.notifyAll()
+				cs.inner.value = decoded
+				cs.inner.notifyAll()
 			}
 		}
 		return nil
@@ -293,7 +251,7 @@ func UseSharedState[T SharedContext](key ContextKey[T], initial T) *SharedSignal
 	keep = append(keep, listener)
 	js.Global().Get("document").Call("addEventListener", "gothic:context:"+key.Name, listener)
 
-	return ss
+	return cs
 }
 
 // AutoKey is rewritten to BinaryKey by the CLI before TinyGo compiles.

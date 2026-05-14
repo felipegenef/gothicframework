@@ -189,18 +189,13 @@ func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decode
 func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name} }
 
 
-func UseContext[T SharedContext](key ContextKey[T], initial T) *Signal[T] {
-	return &Signal[T]{value: initial}
-}
+type ContextSignal[T any] struct{ inner *Signal[T] }
 
-// SharedSignal server-side stub — no-op, same API as the WASM implementation.
-type SharedSignal[T any] struct{ inner *Signal[T] }
+func (s *ContextSignal[T]) Get() T                 { return s.inner.value }
+func (s *ContextSignal[T]) Set(v T)                { s.inner.value = v }
+func (s *ContextSignal[T]) addEffect(e *Effect)    { s.inner.addEffect(e) }
+func (s *ContextSignal[T]) removeEffect(e *Effect) { s.inner.removeEffect(e) }
 
-func (s *SharedSignal[T]) Get() T                { return s.inner.value }
-func (s *SharedSignal[T]) Set(v T)               { s.inner.value = v }
-func (s *SharedSignal[T]) addEffect(e *Effect)   { s.inner.addEffect(e) }
-func (s *SharedSignal[T]) removeEffect(e *Effect) { s.inner.removeEffect(e) }
-
-func UseSharedState[T SharedContext](key ContextKey[T], initial T) *SharedSignal[T] {
-	return &SharedSignal[T]{inner: &Signal[T]{value: initial}}
+func UseContext[T SharedContext](key ContextKey[T], initial T) *ContextSignal[T] {
+	return &ContextSignal[T]{inner: &Signal[T]{value: initial}}
 }

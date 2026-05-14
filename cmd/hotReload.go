@@ -56,7 +56,7 @@ func newHotReloadCommandCli(cli *gothic_cli.GothicCli) HotReloadCommand {
 		mainBinaryName:    mainBinary,
 		excludedDirs:      []string{"assets", "tmp", "vendor", "public", "routes"},
 		watchedExtensions: []string{".go", ".tpl", ".tmpl", ".templ", ".html"},
-		excludeRegex:      *regexp.MustCompile(`.*_templ\.go$`),
+		excludeRegex:      *regexp.MustCompile(`.*_templ\.go$|.*_gen\.go$`),
 	}
 }
 

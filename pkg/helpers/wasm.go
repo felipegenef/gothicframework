@@ -3,6 +3,7 @@ package helpers
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -328,8 +329,9 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	}
 
 	mainPath := filepath.Join(genDir, "main.go")
-	ctxSnippets, codecSrc := collectContextSnippets()
-	if err := writeWasmMain(page.SourceFile, page.FuncBody, page.Imports, ctxSnippets, codecSrc, mainPath); err != nil {
+	ctxSnippets, codecSrc, ctxStructs := collectContextSnippets()
+	body := rewriteContextCalls(page.FuncBody, ctxStructs)
+	if err := writeWasmMain(page.SourceFile, body, page.Imports, ctxSnippets, codecSrc, mainPath); err != nil {
 		return err
 	}
 
@@ -731,10 +733,10 @@ func rewriteAutoKeys(src string) string {
 // collectContextSnippets reads src/context/*.go, parses struct definitions,
 // generates binary codecs for them, rewrites AutoKey calls, and returns
 // the inlinable snippets plus the generated codec source.
-func collectContextSnippets() (snippets []string, codecSrc string) {
+func collectContextSnippets() (snippets []string, codecSrc string, structs []structInfo) {
 	entries, err := os.ReadDir("src/context")
 	if err != nil {
-		return nil, ""
+		return nil, "", nil
 	}
 
 	type rawFile struct{ name, src string }
@@ -761,22 +763,17 @@ func collectContextSnippets() (snippets []string, codecSrc string) {
 		files = append(files, rawFile{e.Name(), src})
 	}
 
-	// Validate: every struct must embed GothicSharedContext with a non-empty key name,
-	// and key names must be unique across all context files.
+	// Validate: structs with GothicSharedContext must have a unique key name.
+	// Structs without it are treated as nested/helper types and skipped.
 	seenKeys := map[string]string{} // key name → struct name
 	for _, s := range allStructs {
 		if s.KeyName == "" {
-			fmt.Fprintf(os.Stderr,
-				"error: %s in src/context/ is missing GothicSharedContext embedding.\n"+
-					"  All context structs must embed GothicSharedContext with a name tag:\n"+
-					"      type %s struct {\n          GothicSharedContext `name:\"your-key-name\"`\n          ...\n      }\n",
-				s.Name, s.Name)
-			os.Exit(1)
+			continue // nested helper struct — no key required
 		}
 		if prev, exists := seenKeys[s.KeyName]; exists {
 			fmt.Fprintf(os.Stderr,
 				"error: duplicate context key name %q — used by both %s and %s in src/context/.\n"+
-					"  Each context struct must have a unique gothic key name.\n",
+					"  Each context struct must have a unique key name.\n",
 				s.KeyName, prev, s.Name)
 			os.Exit(1)
 		}
@@ -799,7 +796,7 @@ func collectContextSnippets() (snippets []string, codecSrc string) {
 			snippets = append(snippets, "// --- from src/context/"+f.name+" ---\n"+src)
 		}
 	}
-	return snippets, codecSrc
+	return snippets, codecSrc, allStructs
 }
 
 // generateKeyVars produces an exported ContextKey var for each struct that has a key name.
@@ -809,10 +806,23 @@ func generateKeyVars(structs []structInfo) string {
 		if s.KeyName == "" {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("var %sKey = BinaryKey[%s](\"%s\", _encode_%s, _decode_%s)\n\n",
-			s.Name, s.Name, s.KeyName, s.Name, s.Name))
+		sb.WriteString(fmt.Sprintf("var %sKey = BinaryKey(\"%s\", _encode_%s, _decode_%s)\n\n",
+			s.Name, s.KeyName, s.Name, s.Name))
 	}
 	return sb.String()
+}
+
+// rewriteContextCalls rewrites UseContext(X{...}) → UseContext(XKey, X{...}) in the
+// generated WASM main.go so TinyGo sees the explicit 2-arg call without any runtime type assertion.
+func rewriteContextCalls(src string, structs []structInfo) string {
+	for _, s := range structs {
+		if s.KeyName == "" {
+			continue
+		}
+		key := s.Name + "Key"
+		src = strings.ReplaceAll(src, "UseContext("+s.Name, "UseContext("+key+", "+s.Name)
+	}
+	return src
 }
 
 // writeContextKeyStubs generates src/context/context_gen.go with server-side
@@ -829,7 +839,12 @@ func writeContextKeyStubs(structs []structInfo, pkgName, keyVars string) {
 	sb.WriteString("import . \"github.com/felipegenef/gothicframework/pkg/wasm\"\n\n")
 	sb.WriteString(generateCodecs(structs))
 	sb.WriteString(keyVars)
-	_ = os.WriteFile("src/context/context_gen.go", []byte(sb.String()), 0644)
+	content := []byte(sb.String())
+	// Only write if content changed — prevents hot-reload from seeing a spurious file change
+	// and triggering an infinite rebuild loop.
+	if existing, err := os.ReadFile("src/context/context_gen.go"); err != nil || !bytes.Equal(existing, content) {
+		_ = os.WriteFile("src/context/context_gen.go", content, 0644)
+	}
 }
 
 func writeWasmMain(src, body string, stdImports []string, ctxSnippets []string, codecSrc string, dest string) error {
