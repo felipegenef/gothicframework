@@ -58,7 +58,7 @@ func (c *{{.TypeName}}) Set(v {{.StructName}}) {
 {{end}}
 {{- if .HasCtx}}
 {{range .MountFns}}func {{.FuncName}}() templ.Component {
-	return routes.ContextManagerComponent("{{.WasmName}}")
+	return routes.ContextManagerComponent("{{.WasmName}}", {{.CompressionConst}})
 }
 
 {{end}}

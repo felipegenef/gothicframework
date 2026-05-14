@@ -39,6 +39,7 @@ node_modules
 tmp
 optimize/*
 public/styles.css
+public/wasm/
 template.yaml
 samconfig.toml
 Dockerfile`

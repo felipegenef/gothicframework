@@ -47,6 +47,9 @@ type RouteConfig[T any] struct {
 	// function.  The CLI extracts the function body and compiles it with TinyGo.
 	// The function is never called server-side; it only needs to compile.
 	ClientSideState func()
+	// WasmCompression sets the compression algorithm for the compiled WASM output.
+	// Defaults to GZIP (zero value). Options: GZIP, BROTLI.
+	WasmCompression CompressionMethod
 	// Path is the HTTP route path, set automatically by RegisterRoute.
 	// Use it with StatefulComponentOf to avoid hardcoding path strings.
 	Path string
@@ -70,8 +73,9 @@ func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, compo
 	wrapped := component
 	if config.ClientSideState != nil {
 		wasmName := WasmOutputName(httpPath)
+		compression := config.WasmCompression
 		wrapped = func(props T) templ.Component {
-			return &wasmInjectedComponent{inner: component(props), wasmName: wasmName}
+			return &wasmInjectedComponent{inner: component(props), wasmName: wasmName, compression: compression}
 		}
 	}
 	handler := config.resolveHandler(wrapped)
@@ -93,8 +97,9 @@ func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, compo
 // wasmInjectedComponent wraps a templ.Component and injects the WASM bootstrap
 // script before </body> in the rendered HTML.
 type wasmInjectedComponent struct {
-	inner    templ.Component
-	wasmName string
+	inner       templ.Component
+	wasmName    string
+	compression CompressionMethod
 }
 
 func (c *wasmInjectedComponent) Render(ctx context.Context, w io.Writer) error {
@@ -103,7 +108,7 @@ func (c *wasmInjectedComponent) Render(ctx context.Context, w io.Writer) error {
 		return err
 	}
 	html := injectGothicScope(buf.Bytes(), c.wasmName)
-	_, err := w.Write(injectWasmBootstrap(html, c.wasmName))
+	_, err := w.Write(injectWasmBootstrap(html, c.wasmName, c.compression))
 	return err
 }
 
@@ -125,7 +130,7 @@ func injectGothicScope(html []byte, wasmName string) []byte {
 // injectWasmBootstrap injects the WASM loader script.
 // The scope ID is generated client-side via Math.random() so the HTML remains
 // fully static and CDN-cacheable regardless of route type.
-func injectWasmBootstrap(html []byte, wasmName string) []byte {
+func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMethod) []byte {
 	isFullPage := bytes.Contains(html, []byte("</body>"))
 
 	// For full pages the scope is on <body>; for fragments it's on the wrapper div
@@ -136,6 +141,11 @@ func injectWasmBootstrap(html []byte, wasmName string) []byte {
 	} else {
 		findEl = `(document.currentScript&&document.currentScript.previousElementSibling)` +
 			`||document.querySelector('[data-gothic-wasm="` + wasmName + `"]:not([data-gothic-scope])')`
+	}
+
+	ext := ".wasm.gz"
+	if compression == BROTLI {
+		ext = ".wasm.br"
 	}
 
 	script := fmt.Sprintf(`<script>
@@ -156,13 +166,13 @@ func injectWasmBootstrap(html []byte, wasmName string) []byte {
         }
         var go=new Go();
         var r=await WebAssembly.instantiateStreaming(
-            fetch('/public/wasm/'+wn+'.wasm.gz'),go.importObject
+            fetch('/public/wasm/'+wn+'%s'),go.importObject
         );
         window.__gothicCurrentModule=id;
         go.run(r.instance);
     })();
 })();
-</script>`, wasmName, findEl)
+</script>`, wasmName, findEl, ext)
 
 	if isFullPage {
 		return bytes.Replace(html, []byte("</body>"), []byte(script+"</body>"), 1)
@@ -177,8 +187,8 @@ func (emptyComponent) Render(_ context.Context, _ io.Writer) error { return nil 
 
 // ContextManagerComponent returns a templ.Component that loads the named context-manager
 // WASM inline (no HTMX round-trip). Drop it in any layout or page with @wasm.AddPageContext().
-func ContextManagerComponent(wasmName string) templ.Component {
-	return &wasmInjectedComponent{inner: emptyComponent{}, wasmName: wasmName}
+func ContextManagerComponent(wasmName string, compression CompressionMethod) templ.Component {
+	return &wasmInjectedComponent{inner: emptyComponent{}, wasmName: wasmName, compression: compression}
 }
 
 func (config *RouteConfig[T]) resolveHandler(component func(T) templ.Component) http.HandlerFunc {

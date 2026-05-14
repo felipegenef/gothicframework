@@ -5,10 +5,23 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
-type AwsHelper struct {
+type AwsHelper struct{}
+
+func (helper *AwsHelper) hasWasmFiles(dir, glob string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if matched, _ := filepath.Match(glob, e.Name()); matched {
+			return true
+		}
+	}
+	return false
 }
 
 func NewAwsHelper() AwsHelper {
@@ -41,22 +54,32 @@ func (helper *AwsHelper) AddCloudFrontAssets(originBucketName string, region str
 	fmt.Println("S3 Files added successfully.")
 
 	// Re-upload public/wasm/ with the correct WASM metadata so browsers receive
-	// Content-Type: application/wasm and Content-Encoding: gzip.
+	// Content-Type: application/wasm and the right Content-Encoding per file type.
 	// The recursive upload above sets Content-Type: application/gzip (wrong).
 	if _, err := os.Stat("public/wasm"); err == nil {
-		wasmCmd := exec.Command("aws", "s3", "cp", "public/wasm",
-			bucketPublicFolderName+"/wasm",
-			"--recursive",
-			"--content-encoding", "gzip",
-			"--content-type", "application/wasm",
-			"--metadata-directive", "REPLACE",
-			"--region", region, "--profile", awsProfile)
-		wasmCmd.Stdout = os.Stdout
-		wasmCmd.Stdin = os.Stdin
-		wasmCmd.Stderr = os.Stderr
-		if err := wasmCmd.Run(); err != nil {
-			fmt.Printf("Error uploading WASM assets with correct headers: %v\n", err)
-			return err
+		for _, enc := range []struct{ glob, encoding string }{
+			{"*.wasm.gz", "gzip"},
+			{"*.wasm.br", "br"},
+		} {
+			if !helper.hasWasmFiles("public/wasm", enc.glob) {
+				continue
+			}
+			wasmCmd := exec.Command("aws", "s3", "cp", "public/wasm",
+				bucketPublicFolderName+"/wasm",
+				"--recursive",
+				"--exclude", "*",
+				"--include", enc.glob,
+				"--content-encoding", enc.encoding,
+				"--content-type", "application/wasm",
+				"--metadata-directive", "REPLACE",
+				"--region", region, "--profile", awsProfile)
+			wasmCmd.Stdout = os.Stdout
+			wasmCmd.Stdin = os.Stdin
+			wasmCmd.Stderr = os.Stderr
+			if err := wasmCmd.Run(); err != nil {
+				fmt.Printf("Error uploading %s WASM assets: %v\n", enc.encoding, err)
+				return err
+			}
 		}
 		fmt.Println("S3 WASM files uploaded with correct headers.")
 	}

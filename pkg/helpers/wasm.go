@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+
+	"github.com/andybalholm/brotli"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -133,8 +135,10 @@ type ServerCtxFuncData struct {
 
 // MountFnData holds data for an AddXxxContext() mount function.
 type MountFnData struct {
-	FuncName string
-	WasmName string
+	FuncName         string
+	WasmName         string
+	Compression      WasmCompression
+	CompressionConst string // "routes.GZIP" or "routes.BROTLI" — used in generated Go code
 }
 
 // ContextGenData drives context_gen.go.tmpl.
@@ -171,9 +175,10 @@ type WasmCtxManagerMainData struct {
 // ─── Internal struct types ─────────────────────────────────────────────────────
 
 type structInfo struct {
-	Name    string
-	KeyName string
-	Fields  []fieldInfo
+	Name        string
+	KeyName     string
+	Compression WasmCompression
+	Fields      []fieldInfo
 }
 
 type fieldInfo struct {
@@ -195,14 +200,24 @@ type WasmHelper struct {
 	cache          *wasmCache
 }
 
+// WasmCompression is the compression algorithm for compiled WASM output.
+// Mirrors routes.CompressionMethod to avoid a circular import with the helpers/routes package.
+type WasmCompression int
+
+const (
+	WasmCompressionGzip   WasmCompression = iota // default (routes.GZIP == 0)
+	WasmCompressionBrotli WasmCompression = iota // routes.BROTLI == 1
+)
+
 // WasmPage describes a single page that has a WASM state function.
 type WasmPage struct {
-	SourceFile string
-	FuncName   string
-	FuncBody   string
-	Imports    []string
-	HttpPath   string
-	OutputName string
+	SourceFile  string
+	FuncName    string
+	FuncBody    string
+	Imports     []string
+	HttpPath    string
+	OutputName  string
+	Compression WasmCompression
 }
 
 func NewWasmHelper(goos, goarch string) WasmHelper {
@@ -225,14 +240,16 @@ func (h *WasmHelper) pageInputHash(page WasmPage) string {
 	}
 	h.feedContextFiles(hh)
 	h.feedFile(hh, tmplWasmPageMain)
+	hh.Write([]byte{byte(page.Compression)})
 	return hex.EncodeToString(hh.Sum(nil))
 }
 
-// ctxManagerInputHash hashes all context files and the manager template.
-func (h *WasmHelper) ctxManagerInputHash() string {
+// ctxManagerInputHash hashes all context files, the manager template, and the compression method.
+func (h *WasmHelper) ctxManagerInputHash(compression WasmCompression) string {
 	hh := sha256.New()
 	h.feedContextFiles(hh)
 	h.feedFile(hh, tmplCtxManagerMain)
+	hh.Write([]byte{byte(compression)})
 	return hex.EncodeToString(hh.Sum(nil))
 }
 
@@ -412,6 +429,7 @@ func (h *WasmHelper) EnsureBinary() error {
 
 var pageStateInlineRe = regexp.MustCompile(`(?m)ClientSideState:\s*func\s*\(\s*\)\s*\{`)
 var pageStateNamedRe = regexp.MustCompile(`(?m)ClientSideState:\s*(\w+)`)
+var wasmCompressionRe = regexp.MustCompile(`(?m)WasmCompression:\s*routes\.(\w+)`)
 
 func (h *WasmHelper) ScanPages(pagesDir, componentsDir string) ([]WasmPage, error) {
 	var pages []WasmPage
@@ -477,27 +495,40 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 	httpPath := h.normalizeWasmHttpPath(path)
 	outputName := h.wasmOutputName(httpPath)
 
+	compression := WasmCompressionGzip
+	if m := wasmCompressionRe.FindStringSubmatch(content); m != nil && m[1] == "BROTLI" {
+		compression = WasmCompressionBrotli
+	}
+
 	return WasmPage{
-		SourceFile: path,
-		FuncBody:   body,
-		Imports:    stdImports,
-		HttpPath:   httpPath,
-		OutputName: outputName,
+		SourceFile:  path,
+		FuncBody:    body,
+		Imports:     stdImports,
+		HttpPath:    httpPath,
+		OutputName:  outputName,
+		Compression: compression,
 	}, true, nil
 }
 
 // ─── Build pipeline ────────────────────────────────────────────────────────────
 
 func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
+	compressedExt := compressionExt(page.Compression)
 	var hash string
 	if h.cache != nil {
 		hash = h.pageInputHash(page)
-		gzPath := filepath.Join(outDir, page.OutputName+".wasm.gz")
+		outPath := filepath.Join(outDir, page.OutputName+".wasm"+compressedExt)
 		if h.cache.upToDate(page.OutputName, hash) {
-			if _, err := os.Stat(gzPath); err == nil {
+			if _, err := os.Stat(outPath); err == nil {
 				fmt.Printf("wasm: %s → up to date\n", page.OutputName)
 				return nil
 			}
+		}
+	}
+	// Remove stale files from any previous compression method.
+	for _, ext := range []string{".gz", ".br"} {
+		if ext != compressedExt {
+			os.Remove(filepath.Join(outDir, page.OutputName+".wasm"+ext))
 		}
 	}
 
@@ -565,15 +596,15 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 		}
 	}
 
-	gzPath := absOutFile + ".gz"
-	if err := h.compressWasm(absOutFile, gzPath); err != nil {
-		return fmt.Errorf("wasm: gzip %s: %w", page.OutputName, err)
+	finalFile := absOutFile + compressedExt
+	if err := h.compressWasmWith(absOutFile, finalFile, page.Compression); err != nil {
+		return fmt.Errorf("wasm: compress %s: %w", page.OutputName, err)
 	}
 	os.Remove(absOutFile)
 
-	gzSize, _ := h.fileSize(gzPath)
-	fmt.Printf("wasm: %s → %s → %s (gzip)\n",
-		page.OutputName, h.formatBytes(wasmSize), h.formatBytes(gzSize))
+	finalSize, _ := h.fileSize(finalFile)
+	fmt.Printf("wasm: %s → %s → %s (%s)\n",
+		page.OutputName, h.formatBytes(wasmSize), h.formatBytes(finalSize), compressionLabel(page.Compression))
 	if hash != "" {
 		h.cache.update(page.OutputName, hash)
 	}
@@ -667,15 +698,22 @@ func (h *WasmHelper) GenerateContextManagers(outDir string) error {
 
 func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStructs []structInfo, outDir string) error {
 	wasmName := "ctx-" + s.KeyName
+	compression := s.Compression
 	var hash string
 	if h.cache != nil {
-		hash = h.ctxManagerInputHash()
-		gzPath := filepath.Join(outDir, wasmName+".wasm.gz")
+		hash = h.ctxManagerInputHash(compression)
+		outPath := filepath.Join(outDir, wasmName+".wasm"+compressionExt(compression))
 		if h.cache.upToDate(wasmName, hash) {
-			if _, err := os.Stat(gzPath); err == nil {
+			if _, err := os.Stat(outPath); err == nil {
 				fmt.Printf("wasm: %s → up to date\n", wasmName)
 				return nil
 			}
+		}
+	}
+	// Remove stale files from any previous compression method.
+	for _, ext := range []string{".gz", ".br"} {
+		if ext != compressionExt(compression) {
+			os.Remove(filepath.Join(outDir, wasmName+".wasm"+ext))
 		}
 	}
 
@@ -735,14 +773,14 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 		}
 	}
 
-	gzPath := absOutFile + ".gz"
-	if err := h.compressWasm(absOutFile, gzPath); err != nil {
-		return fmt.Errorf("wasm: gzip %s: %w", wasmName, err)
+	compOutFile := absOutFile + compressionExt(compression) // absOutFile already ends in .wasm
+	if err := h.compressWasmWith(absOutFile, compOutFile, compression); err != nil {
+		return fmt.Errorf("wasm: compress %s: %w", wasmName, err)
 	}
 	os.Remove(absOutFile)
 
-	gzSize, _ := h.fileSize(gzPath)
-	fmt.Printf("wasm: %s → %s → %s (gzip)\n", wasmName, h.formatBytes(wasmSize), h.formatBytes(gzSize))
+	compSize, _ := h.fileSize(compOutFile)
+	fmt.Printf("wasm: %s → %s → %s (%s)\n", wasmName, h.formatBytes(wasmSize), h.formatBytes(compSize), compressionLabel(compression))
 	if hash != "" {
 		h.cache.update(wasmName, hash)
 	}
@@ -957,9 +995,15 @@ func (h *WasmHelper) buildMountFnData(structs []structInfo) []MountFnData {
 		if s.KeyName == "" {
 			continue
 		}
+		compressionConst := "routes.GZIP"
+		if s.Compression == WasmCompressionBrotli {
+			compressionConst = "routes.BROTLI"
+		}
 		result = append(result, MountFnData{
-			FuncName: "Add" + h.ctxFuncName(s.Name),
-			WasmName: "ctx-" + s.KeyName,
+			FuncName:         "Add" + h.ctxFuncName(s.Name),
+			WasmName:         "ctx-" + s.KeyName,
+			Compression:      s.Compression,
+			CompressionConst: compressionConst,
 		})
 	}
 	return result
@@ -1005,7 +1049,9 @@ func (h *WasmHelper) parseStructsFromSource(src string) []structInfo {
 				}
 				if len(field.Names) == 0 && typ == "GothicSharedContext" {
 					if field.Tag != nil {
-						si.KeyName = h.parseNameTag(strings.Trim(field.Tag.Value, "`"))
+						raw := strings.Trim(field.Tag.Value, "`")
+						si.KeyName = h.parseNameTag(raw)
+						si.Compression = h.parseCompressionTag(raw)
 					}
 					continue
 				}
@@ -1052,6 +1098,18 @@ func (h *WasmHelper) parseNameTag(tag string) string {
 		}
 	}
 	return ""
+}
+
+func (h *WasmHelper) parseCompressionTag(tag string) WasmCompression {
+	for _, part := range strings.Fields(tag) {
+		if strings.HasPrefix(part, `compression:"`) {
+			val := strings.Trim(strings.TrimPrefix(part, "compression:"), `"`)
+			if strings.EqualFold(val, "brotli") {
+				return WasmCompressionBrotli
+			}
+		}
+	}
+	return WasmCompressionGzip
 }
 
 // ─── Codec computation ────────────────────────────────────────────────────────
@@ -1321,7 +1379,22 @@ done:
 
 // ─── Compression and file utilities ──────────────────────────────────────────
 
-func (h *WasmHelper) compressWasm(src, dst string) error {
+// compressionExt returns the suffix appended after ".wasm" (".gz" or ".br").
+func compressionExt(c WasmCompression) string {
+	if c == WasmCompressionBrotli {
+		return ".br"
+	}
+	return ".gz"
+}
+
+func compressionLabel(c WasmCompression) string {
+	if c == WasmCompressionBrotli {
+		return "brotli"
+	}
+	return "gzip"
+}
+
+func (h *WasmHelper) compressWasmWith(src, dst string, c WasmCompression) error {
 	in, err := os.ReadFile(src)
 	if err != nil {
 		return err
@@ -1331,6 +1404,14 @@ func (h *WasmHelper) compressWasm(src, dst string) error {
 		return err
 	}
 	defer f.Close()
+	if c == WasmCompressionBrotli {
+		w := brotli.NewWriterLevel(f, brotli.BestCompression)
+		if _, err := w.Write(in); err != nil {
+			w.Close()
+			return err
+		}
+		return w.Close()
+	}
 	w, err := gzip.NewWriterLevel(f, gzip.BestCompression)
 	if err != nil {
 		return err

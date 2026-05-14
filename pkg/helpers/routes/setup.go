@@ -21,30 +21,32 @@ func noCacheMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// wasmGzipResponseWriter forces the correct Content-Type and Content-Encoding
-// for pre-compressed .wasm.gz files served by http.FileServer.
-// Without this, FileServer sets Content-Type: application/gzip (wrong) and the
-// browser treats the file as a download instead of WASM.
-type wasmGzipResponseWriter struct {
+// wasmEncodedResponseWriter forces Content-Type: application/wasm and the
+// correct Content-Encoding for pre-compressed WASM files served by http.FileServer.
+type wasmEncodedResponseWriter struct {
 	http.ResponseWriter
+	encoding string
 }
 
-func (w *wasmGzipResponseWriter) Header() http.Header {
+func (w *wasmEncodedResponseWriter) Header() http.Header {
 	h := w.ResponseWriter.Header()
 	h.Set("Content-Type", "application/wasm")
-	h.Set("Content-Encoding", "gzip")
+	h.Set("Content-Encoding", w.encoding)
 	return h
 }
 
-// wasmAwareFileServer wraps a file server so that .wasm.gz requests get the
-// correct Content-Type and Content-Encoding headers.
+// wasmAwareFileServer wraps a file server so that .wasm.gz and .wasm.br requests
+// get the correct Content-Type and Content-Encoding headers.
 func wasmAwareFileServer(fileServer http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".wasm.gz") {
-			fileServer.ServeHTTP(&wasmGzipResponseWriter{w}, r)
-			return
+		switch {
+		case strings.HasSuffix(r.URL.Path, ".wasm.gz"):
+			fileServer.ServeHTTP(&wasmEncodedResponseWriter{w, "gzip"}, r)
+		case strings.HasSuffix(r.URL.Path, ".wasm.br"):
+			fileServer.ServeHTTP(&wasmEncodedResponseWriter{w, "br"}, r)
+		default:
+			fileServer.ServeHTTP(w, r)
 		}
-		fileServer.ServeHTTP(w, r)
 	})
 }
 
