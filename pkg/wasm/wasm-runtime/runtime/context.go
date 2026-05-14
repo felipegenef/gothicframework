@@ -301,8 +301,8 @@ func (f *ContextField[T]) removeEffect(e *Effect) { f.sig.removeEffect(e) }
 
 // ── Cross-module context helpers ──────────────────────────────────────────────
 
-// _readContextStore reads the encoded context value from the shared JS store.
-func _readContextStore(keyName string) (string, bool) {
+// ReadCtxStore reads the encoded context value from the shared JS store.
+func ReadCtxStore(keyName string) (string, bool) {
 	v := ensureContextStore().Get(keyName)
 	if v.IsUndefined() || v.IsNull() {
 		return "", false
@@ -310,8 +310,8 @@ func _readContextStore(keyName string) (string, bool) {
 	return v.String(), true
 }
 
-// _broadcastContextEncoded writes encoded to the JS store and dispatches a CustomEvent.
-func _broadcastContextEncoded(keyName, encoded string) {
+// BroadcastCtxEncoded writes encoded to the JS store and dispatches a CustomEvent.
+func BroadcastCtxEncoded(keyName, encoded string) {
 	ensureContextStore().Set(keyName, encoded)
 	init := js.Global().Get("Object").New()
 	init.Set("detail", encoded)
@@ -319,8 +319,8 @@ func _broadcastContextEncoded(keyName, encoded string) {
 	js.Global().Get("document").Call("dispatchEvent", event)
 }
 
-// _listenContextEvent registers a cross-module listener for context updates.
-func _listenContextEvent(keyName string, fn func(string)) {
+// ListenCtxEvent registers a cross-module listener for context updates.
+func ListenCtxEvent(keyName string, fn func(string)) {
 	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		if len(args) > 0 {
 			detail := args[0].Get("detail")
@@ -363,10 +363,10 @@ func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decode
 		encode: func(v T) string {
 			e := NewEncoder(64)
 			encode(v, e)
-			return hexEncode(e.Buf)
+			return HexEncode(e.Buf)
 		},
 		decode: func(s string) T {
-			d := &Decoder{Buf: hexDecode(s)}
+			d := &Decoder{Buf: HexDecode(s)}
 			return decode(d)
 		},
 	}

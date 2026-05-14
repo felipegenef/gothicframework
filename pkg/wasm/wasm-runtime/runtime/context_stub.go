@@ -175,10 +175,10 @@ func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decode
 		encode: func(v T) string {
 			e := NewEncoder(64)
 			encode(v, e)
-			return hexEncode(e.Buf)
+			return HexEncode(e.Buf)
 		},
 		decode: func(s string) T {
-			d := &Decoder{Buf: hexDecode(s)}
+			d := &Decoder{Buf: HexDecode(s)}
 			return decode(d)
 		},
 	}

@@ -813,15 +813,25 @@ func generateKeyVars(structs []structInfo) string {
 	return sb.String()
 }
 
-// generateContextTypeStructs produces a `type TContext struct { F *ContextField[T]; ... }`
-// declaration for every context struct (those with a KeyName).
+// ctxTypeName returns the unexported signals-struct name for a context struct.
+// e.g. "Page" → "pageContext", "UserSession" → "userSessionContext"
+func ctxTypeName(structName string) string {
+	return strings.ToLower(structName[:1]) + structName[1:] + "Context"
+}
+
+// ctxFuncName returns the exported constructor function name.
+// e.g. "Page" → "PageContext"
+func ctxFuncName(structName string) string { return structName + "Context" }
+
+// generateContextTypeStructs produces an unexported `type {lc}Context struct { F *ContextField[T]; ... }`
+// for every context struct (those with a KeyName).
 func generateContextTypeStructs(structs []structInfo) string {
 	var sb strings.Builder
 	for _, s := range structs {
 		if s.KeyName == "" {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("type %sContext struct {\n", s.Name))
+		sb.WriteString(fmt.Sprintf("type %s struct {\n", ctxTypeName(s.Name)))
 		for _, f := range s.Fields {
 			sb.WriteString(fmt.Sprintf("\t%s *ContextField[%s]\n", f.Name, f.Type))
 		}
@@ -830,31 +840,35 @@ func generateContextTypeStructs(structs []structInfo) string {
 	return sb.String()
 }
 
-// generateWasmContextFuncs produces the WASM-side UseT and (c *TContext).Set functions
+// generateWasmContextFuncs produces the WASM-side XxxContext constructor and Set method
 // for each context struct. These are injected into the generated main.go (package main)
 // which dot-imports wasm-runtime/runtime, so all runtime helpers are in scope.
+// The constructor is variadic so callers can write PageContext() or PageContext(Page{...}).
 func generateWasmContextFuncs(structs []structInfo) string {
 	var sb strings.Builder
 	for _, s := range structs {
 		if s.KeyName == "" {
 			continue
 		}
-		funcName := "Use" + s.Name
+		ctor := ctxFuncName(s.Name)
+		typ := ctxTypeName(s.Name)
 		keyName := s.KeyName
 
-		// UseT function
-		sb.WriteString(fmt.Sprintf("func %s(initial %s) *%sContext {\n", funcName, s.Name, s.Name))
-		sb.WriteString("\tv := initial\n")
-		sb.WriteString(fmt.Sprintf("\tif stored, ok := _readContextStore(%q); ok {\n", keyName))
-		sb.WriteString(fmt.Sprintf("\t\tv = _decode_%s(&Decoder{Buf: hexDecode(stored)})\n", s.Name))
+		// Constructor: XxxContext(initial ...Xxx) *xxxContext
+		sb.WriteString(fmt.Sprintf("func %s(initial ...%s) *%s {\n", ctor, s.Name, typ))
+		// Resolve initial value: from arg, context store, or zero.
+		sb.WriteString(fmt.Sprintf("\tvar _z %s\n", s.Name))
+		sb.WriteString("\tif len(initial) > 0 { _z = initial[0] }\n")
+		sb.WriteString(fmt.Sprintf("\tif stored, ok := ReadCtxStore(%q); ok {\n", keyName))
+		sb.WriteString(fmt.Sprintf("\t\t_z = _decode_%s(&Decoder{Buf: HexDecode(stored)})\n", s.Name))
 		sb.WriteString("\t}\n")
-		sb.WriteString(fmt.Sprintf("\tctx := &%sContext{\n", s.Name))
+		sb.WriteString(fmt.Sprintf("\tctx := &%s{\n", typ))
 		for _, f := range s.Fields {
-			sb.WriteString(fmt.Sprintf("\t\t%s: NewContextField(v.%s),\n", f.Name, f.Name))
+			sb.WriteString(fmt.Sprintf("\t\t%s: NewContextField(_z.%s),\n", f.Name, f.Name))
 		}
 		sb.WriteString("\t}\n")
 
-		// broadcast closure — uses Peek() so it doesn't accidentally track deps
+		// broadcast closure — uses Peek() so it does not accidentally track deps
 		sb.WriteString("\tbroadcast := func() {\n")
 		sb.WriteString("\t\te := NewEncoder(64)\n")
 		sb.WriteString(fmt.Sprintf("\t\t_encode_%s(%s{\n", s.Name, s.Name))
@@ -862,16 +876,15 @@ func generateWasmContextFuncs(structs []structInfo) string {
 			sb.WriteString(fmt.Sprintf("\t\t\t%s: ctx.%s.Peek(),\n", f.Name, f.Name))
 		}
 		sb.WriteString("\t\t}, e)\n")
-		sb.WriteString(fmt.Sprintf("\t\t_broadcastContextEncoded(%q, hexEncode(e.Buf))\n", keyName))
+		sb.WriteString(fmt.Sprintf("\t\tBroadcastCtxEncoded(%q, HexEncode(e.Buf))\n", keyName))
 		sb.WriteString("\t}\n")
-
 		for _, f := range s.Fields {
 			sb.WriteString(fmt.Sprintf("\tctx.%s.SetBroadcast(broadcast)\n", f.Name))
 		}
 
 		// cross-module listener
-		sb.WriteString(fmt.Sprintf("\t_listenContextEvent(%q, func(detail string) {\n", keyName))
-		sb.WriteString(fmt.Sprintf("\t\tdecoded := _decode_%s(&Decoder{Buf: hexDecode(detail)})\n", s.Name))
+		sb.WriteString(fmt.Sprintf("\tListenCtxEvent(%q, func(detail string) {\n", keyName))
+		sb.WriteString(fmt.Sprintf("\t\tdecoded := _decode_%s(&Decoder{Buf: HexDecode(detail)})\n", s.Name))
 		for _, f := range s.Fields {
 			sb.WriteString(fmt.Sprintf("\t\tctx.%s.ApplyExternal(decoded.%s)\n", f.Name, f.Name))
 		}
@@ -879,36 +892,39 @@ func generateWasmContextFuncs(structs []structInfo) string {
 		sb.WriteString("\treturn ctx\n}\n\n")
 
 		// Set method: update all fields at once + single broadcast
-		sb.WriteString(fmt.Sprintf("func (c *%sContext) Set(v %s) {\n", s.Name, s.Name))
+		sb.WriteString(fmt.Sprintf("func (c *%s) Set(v %s) {\n", typ, s.Name))
 		for _, f := range s.Fields {
 			sb.WriteString(fmt.Sprintf("\tc.%s.ApplyExternal(v.%s)\n", f.Name, f.Name))
 		}
 		sb.WriteString("\te := NewEncoder(64)\n")
 		sb.WriteString(fmt.Sprintf("\t_encode_%s(v, e)\n", s.Name))
-		sb.WriteString(fmt.Sprintf("\t_broadcastContextEncoded(%q, hexEncode(e.Buf))\n", keyName))
+		sb.WriteString(fmt.Sprintf("\tBroadcastCtxEncoded(%q, HexEncode(e.Buf))\n", keyName))
 		sb.WriteString("}\n\n")
 	}
 	return sb.String()
 }
 
-// generateServerContextFuncs produces server-side stub UseT and (c *TContext).Set for
-// each context struct. These go into context_gen.go (no JS, no broadcast).
+// generateServerContextFuncs produces server-side stub XxxContext constructor and Set
+// for each context struct. Goes into context_gen.go (no JS, no broadcast).
 func generateServerContextFuncs(structs []structInfo) string {
 	var sb strings.Builder
 	for _, s := range structs {
 		if s.KeyName == "" {
 			continue
 		}
-		funcName := "Use" + s.Name
+		ctor := ctxFuncName(s.Name)
+		typ := ctxTypeName(s.Name)
 
-		sb.WriteString(fmt.Sprintf("func %s(initial %s) *%sContext {\n", funcName, s.Name, s.Name))
-		sb.WriteString(fmt.Sprintf("\treturn &%sContext{\n", s.Name))
+		sb.WriteString(fmt.Sprintf("func %s(initial ...%s) *%s {\n", ctor, s.Name, typ))
+		sb.WriteString(fmt.Sprintf("\tvar _z %s\n", s.Name))
+		sb.WriteString("\tif len(initial) > 0 { _z = initial[0] }\n")
+		sb.WriteString(fmt.Sprintf("\treturn &%s{\n", typ))
 		for _, f := range s.Fields {
-			sb.WriteString(fmt.Sprintf("\t\t%s: NewContextField(initial.%s),\n", f.Name, f.Name))
+			sb.WriteString(fmt.Sprintf("\t\t%s: NewContextField(_z.%s),\n", f.Name, f.Name))
 		}
 		sb.WriteString("\t}\n}\n\n")
 
-		sb.WriteString(fmt.Sprintf("func (c *%sContext) Set(v %s) {\n", s.Name, s.Name))
+		sb.WriteString(fmt.Sprintf("func (c *%s) Set(v %s) {\n", typ, s.Name))
 		for _, f := range s.Fields {
 			sb.WriteString(fmt.Sprintf("\tc.%s.ApplyExternal(v.%s)\n", f.Name, f.Name))
 		}
@@ -917,19 +933,22 @@ func generateServerContextFuncs(structs []structInfo) string {
 	return sb.String()
 }
 
-// rewriteContextCalls rewrites UseContext(X{...}) → UseX(X{...}) in the generated WASM
-// main.go. The generated UseX function is defined in codecSrc with the full WASM impl.
-// This also handles any old 2-arg form left by a previous rewrite pass.
+// rewriteContextCalls rewrites legacy UseContext / UseX calls in the generated WASM
+// main.go body to the new XxxContext(...) constructor form.
 func rewriteContextCalls(src string, structs []structInfo) string {
 	for _, s := range structs {
 		if s.KeyName == "" {
 			continue
 		}
-		newFn := "Use" + s.Name
-		// Handle old 2-arg form first (in case source was already partially rewritten).
-		src = strings.ReplaceAll(src, "UseContext("+s.Name+"Key, "+s.Name, newFn+"("+s.Name)
-		// Handle the canonical 1-arg user form.
-		src = strings.ReplaceAll(src, "UseContext("+s.Name, newFn+"("+s.Name)
+		ctor := ctxFuncName(s.Name)
+		// Old 2-arg runtime form.
+		src = strings.ReplaceAll(src, "UseContext("+s.Name+"Key, "+s.Name, ctor+"("+s.Name)
+		// Old UseContext(S{...}) form.
+		src = strings.ReplaceAll(src, "UseContext("+s.Name, ctor+"("+s.Name)
+		// Previous UseS(S{...}) intermediate form.
+		src = strings.ReplaceAll(src, "Use"+s.Name+"("+s.Name, ctor+"("+s.Name)
+		// Previous UseSContext(S{...}) form.
+		src = strings.ReplaceAll(src, "Use"+s.Name+"Context("+s.Name, ctor+"("+s.Name)
 	}
 	return src
 }

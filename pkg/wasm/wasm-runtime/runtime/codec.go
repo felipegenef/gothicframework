@@ -121,7 +121,7 @@ func (d *Decoder) String() string {
 // hex helpers — inline to avoid importing encoding/hex.
 const hextable = "0123456789abcdef"
 
-func hexEncode(src []byte) string {
+func HexEncode(src []byte) string {
 	dst := make([]byte, len(src)*2)
 	for i, b := range src {
 		dst[i*2] = hextable[b>>4]
@@ -130,7 +130,7 @@ func hexEncode(src []byte) string {
 	return string(dst)
 }
 
-func hexDecode(s string) []byte {
+func HexDecode(s string) []byte {
 	if len(s)%2 != 0 {
 		return nil
 	}
