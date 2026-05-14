@@ -396,6 +396,7 @@ func ListenCtxPing(keyName string, fn func()) {
 
 // BroadcastCtxOnline dispatches the online ack to all consumer WASMs for this key.
 func BroadcastCtxOnline(keyName, encoded string) {
+	ensureContextStore().Set(keyName, encoded)
 	init := js.Global().Get("Object").New()
 	init.Set("detail", encoded)
 	event := js.Global().Get("CustomEvent").New("gothic:ctx-online:"+keyName, init)

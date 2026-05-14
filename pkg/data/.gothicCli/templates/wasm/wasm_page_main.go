@@ -59,7 +59,11 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 		}
 	}
 {{range .Fields}}	ctx.{{.Name}}.SetBroadcast(broadcast)
-{{end}}
+{{end}}	if _stored, _ok := ReadCtxStore("{{$fn.KeyName}}"); _ok {
+		_init := _decode_{{$fn.StructName}}(&Decoder{Buf: HexDecode(_stored)})
+{{range .Fields}}		ctx.{{.Name}}.ApplyExternal(_init.{{.Name}})
+{{end}}		ctx._online = true
+	}
 	ListenCtxOnline("{{$fn.KeyName}}", func(detail string) {
 		decoded := _decode_{{$fn.StructName}}(&Decoder{Buf: HexDecode(detail)})
 {{range .Fields}}		ctx.{{.Name}}.ApplyExternal(decoded.{{.Name}})

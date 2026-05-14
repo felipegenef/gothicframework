@@ -47,7 +47,8 @@ func main() {
 	if stored, ok := ReadCtxStore("{{.KeyName}}"); ok {
 		_ctxState = _decode_{{.StructName}}(&Decoder{Buf: HexDecode(stored)})
 	}
-	_broadcastOnline()
+	// Register listeners BEFORE broadcasting so any pending set-requests sent by
+	// consumers during the online ack are not missed.
 	ListenCtxPing("{{.KeyName}}", func() { _broadcastOnline() })
 	ListenCtxSetReq("{{.KeyName}}", func(detail string) {
 		_ctxState = _decode_{{.StructName}}(&Decoder{Buf: HexDecode(detail)})
@@ -55,5 +56,6 @@ func main() {
 		_encode_{{.StructName}}(_ctxState, e)
 		BroadcastCtxEncoded("{{.KeyName}}", HexEncode(e.Buf))
 	})
+	_broadcastOnline()
 	select {}
 }
