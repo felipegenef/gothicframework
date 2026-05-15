@@ -5,6 +5,9 @@ package main
 
 import (
 	. "wasm-runtime/runtime"
+{{- if .HasTime}}
+	"time"
+{{- end}}
 )
 
 // ── auto-generated codecs (do not edit) ─────────────────────────────────

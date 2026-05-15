@@ -145,6 +145,7 @@ type MountFnData struct {
 type ContextGenData struct {
 	PkgName     string
 	HasCtx      bool
+	HasTime     bool // true when any struct field has type time.Time
 	Codecs      []StructCodecData
 	KeyVars     []KeyVarData
 	CtxTypes    []CtxTypeData
@@ -168,6 +169,7 @@ type WasmPageMainData struct {
 type WasmCtxManagerMainData struct {
 	StructName  string
 	KeyName     string
+	HasTime     bool // true when any struct field has type time.Time
 	Codecs      []StructCodecData
 	CtxSnippets []string
 }
@@ -548,9 +550,9 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	}
 
 	mainPath := filepath.Join(genDir, "main.go")
-	ctxSnippets, ctxStructs := h.collectContextSnippets()
+	ctxSnippets, ctxStructs, ctxAliases := h.collectContextSnippets()
 	body := h.rewriteContextCalls(page.FuncBody, ctxStructs)
-	if err := h.writeWasmMain(page.SourceFile, body, page.Imports, ctxSnippets, ctxStructs, mainPath); err != nil {
+	if err := h.writeWasmMain(page.SourceFile, body, page.Imports, ctxSnippets, ctxStructs, ctxAliases, mainPath); err != nil {
 		return err
 	}
 
@@ -677,7 +679,7 @@ func (h *WasmHelper) CopyWasmExec(destDir string) error {
 // ─── Context manager build ─────────────────────────────────────────────────────
 
 func (h *WasmHelper) GenerateContextManagers(outDir string) error {
-	snippets, structs := h.collectContextSnippets()
+	snippets, structs, aliases := h.collectContextSnippets()
 	if !h.hasCtxStructs(structs) {
 		return nil
 	}
@@ -689,14 +691,14 @@ func (h *WasmHelper) GenerateContextManagers(outDir string) error {
 		if s.KeyName == "" {
 			continue
 		}
-		if err := h.buildContextManager(s, snippets, structs, outDir); err != nil {
+		if err := h.buildContextManager(s, snippets, structs, aliases, outDir); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStructs []structInfo, outDir string) error {
+func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStructs []structInfo, aliases map[string]string, outDir string) error {
 	wasmName := "ctx-" + s.KeyName
 	compression := s.Compression
 	var hash string
@@ -733,10 +735,15 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 	}
 
 	mainPath := filepath.Join(genDir, "main.go")
+	codecs, err := h.buildCodecData(allStructs, aliases)
+	if err != nil {
+		return fmt.Errorf("wasm: context codec: %w", err)
+	}
 	if err := h.Template.UpdateFromTemplate(tmplCtxManagerMain, mainPath, WasmCtxManagerMainData{
 		StructName:  s.Name,
 		KeyName:     s.KeyName,
-		Codecs:      h.buildCodecData(allStructs),
+		HasTime:     h.hasTimeFields(allStructs),
+		Codecs:      codecs,
 		CtxSnippets: snippets,
 	}); err != nil {
 		return fmt.Errorf("wasm: render context manager main.go: %w", err)
@@ -789,7 +796,25 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 
 // ─── WASM main.go generation ──────────────────────────────────────────────────
 
-func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, ctxSnippets []string, ctxStructs []structInfo, dest string) error {
+func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, ctxSnippets []string, ctxStructs []structInfo, aliases map[string]string, dest string) error {
+	codecs, err := h.buildCodecData(ctxStructs, aliases)
+	if err != nil {
+		return fmt.Errorf("wasm: codec: %w", err)
+	}
+	// Inject "time" import when any context struct uses time.Time and the page
+	// hasn't already imported it from its own source file.
+	if h.hasTimeFields(ctxStructs) {
+		hasTime := false
+		for _, imp := range stdImports {
+			if strings.Contains(imp, `"time"`) {
+				hasTime = true
+				break
+			}
+		}
+		if !hasTime {
+			stdImports = append(stdImports, `"time"`)
+		}
+	}
 	var indented strings.Builder
 	for _, line := range strings.Split(body, "\n") {
 		indented.WriteString("\t" + line + "\n")
@@ -798,7 +823,7 @@ func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, ctxSni
 	return h.Template.UpdateFromTemplate(tmplWasmPageMain, dest, WasmPageMainData{
 		SourceFile:  src,
 		StdImports:  stdImports,
-		Codecs:      h.buildCodecData(ctxStructs),
+		Codecs:      codecs,
 		KeyVars:     h.buildKeyVarData(ctxStructs),
 		CtxTypes:    h.buildCtxTypeData(ctxStructs),
 		WasmFuncs:   h.buildWasmCtxFuncData(ctxStructs),
@@ -816,15 +841,16 @@ var autoKeyRe = regexp.MustCompile(`AutoKey\[(\[\][\w]+|[\w]+)\]\("([^"]+)"\)`)
 // collectContextSnippets reads src/context/*.go, parses struct definitions,
 // generates context_gen.go (server side), and returns inlinable user code
 // snippets and the parsed structs for template rendering.
-func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []structInfo) {
+func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []structInfo, aliases map[string]string) {
 	entries, err := os.ReadDir("src/context")
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	type rawFile struct{ name, src string }
 	var files []rawFile
 	var allStructs []structInfo
+	allAliases := make(map[string]string)
 	pkgName := "gothicwasm"
 
 	for _, e := range entries {
@@ -841,7 +867,11 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 				pkgName = pf.Name.Name
 			}
 		}
-		allStructs = append(allStructs, h.parseStructsFromSource(src)...)
+		structs, aliases := h.parseStructsFromSource(src)
+		allStructs = append(allStructs, structs...)
+		for k, v := range aliases {
+			allAliases[k] = v
+		}
 		files = append(files, rawFile{e.Name(), src})
 	}
 
@@ -860,7 +890,7 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 		seenKeys[s.KeyName] = s.Name
 	}
 
-	h.writeContextKeyStubs(allStructs, pkgName)
+	h.writeContextKeyStubs(allStructs, allAliases, pkgName)
 
 	for _, f := range files {
 		src := f.src
@@ -872,19 +902,26 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 			snippets = append(snippets, "// --- from src/context/"+f.name+" ---\n"+src)
 		}
 	}
-	return snippets, allStructs
+	return snippets, allStructs, allAliases
 }
 
-func (h *WasmHelper) writeContextKeyStubs(structs []structInfo, pkgName string) {
+func (h *WasmHelper) writeContextKeyStubs(structs []structInfo, aliases map[string]string, pkgName string) {
 	if len(structs) == 0 {
 		_ = os.Remove("src/context/context_gen.go")
 		return
 	}
 
+	codecs, err := h.buildCodecData(structs, aliases)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: context codec: %v\n", err)
+		os.Exit(1)
+	}
+
 	data := ContextGenData{
 		PkgName:     pkgName,
 		HasCtx:      h.hasCtxStructs(structs),
-		Codecs:      h.buildCodecData(structs),
+		HasTime:     h.hasTimeFields(structs),
+		Codecs:      codecs,
 		KeyVars:     h.buildKeyVarData(structs),
 		CtxTypes:    h.buildCtxTypeData(structs),
 		ServerFuncs: h.buildServerCtxFuncData(structs),
@@ -905,7 +942,18 @@ func (h *WasmHelper) hasCtxStructs(structs []structInfo) bool {
 	return false
 }
 
-func (h *WasmHelper) buildCodecData(structs []structInfo) []StructCodecData {
+func (h *WasmHelper) hasTimeFields(structs []structInfo) bool {
+	for _, s := range structs {
+		for _, f := range s.Fields {
+			if f.Type == "time.Time" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (h *WasmHelper) buildCodecData(structs []structInfo, aliases map[string]string) ([]StructCodecData, error) {
 	names := make(map[string]bool, len(structs))
 	for _, s := range structs {
 		names[s.Name] = true
@@ -914,14 +962,15 @@ func (h *WasmHelper) buildCodecData(structs []structInfo) []StructCodecData {
 	for _, s := range structs {
 		sd := StructCodecData{Name: s.Name}
 		for _, f := range s.Fields {
-			enc, dec, ok := h.codecLines(f, names)
-			if ok {
-				sd.Fields = append(sd.Fields, FieldCodec{Name: f.Name, EncLine: enc, DecLine: dec})
+			enc, dec, err := h.codecLines(f, names, aliases)
+			if err != nil {
+				return nil, fmt.Errorf("struct %s field %s: %w", s.Name, f.Name, err)
 			}
+			sd.Fields = append(sd.Fields, FieldCodec{Name: f.Name, EncLine: enc, DecLine: dec})
 		}
 		result = append(result, sd)
 	}
-	return result
+	return result, nil
 }
 
 func (h *WasmHelper) buildKeyVarData(structs []structInfo) []KeyVarData {
@@ -1019,13 +1068,15 @@ func (h *WasmHelper) ctxFuncName(structName string) string { return structName +
 
 // ─── Struct parsing ───────────────────────────────────────────────────────────
 
-func (h *WasmHelper) parseStructsFromSource(src string) []structInfo {
+// parseStructsFromSource parses struct definitions and type aliases from a Go source string.
+// typeAliases maps alias name → underlying type string (e.g. "MyInt" → "int").
+func (h *WasmHelper) parseStructsFromSource(src string) (structs []structInfo, typeAliases map[string]string) {
+	typeAliases = make(map[string]string)
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "", src, parser.ParseComments)
 	if err != nil {
-		return nil
+		return nil, typeAliases
 	}
-	var structs []structInfo
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok {
@@ -1036,33 +1087,41 @@ func (h *WasmHelper) parseStructsFromSource(src string) []structInfo {
 			if !ok {
 				continue
 			}
-			st, ok := ts.Type.(*ast.StructType)
-			if !ok {
-				continue
-			}
-			si := structInfo{Name: ts.Name.Name}
-			for _, field := range st.Fields.List {
-				typ := h.astTypeString(field.Type)
-				tag := ""
-				if field.Tag != nil {
-					tag = h.parseGothicTag(strings.Trim(field.Tag.Value, "`"))
+			switch t := ts.Type.(type) {
+			case *ast.Ident:
+				// type MyInt int  — record the alias
+				typeAliases[ts.Name.Name] = t.Name
+			case *ast.ArrayType, *ast.MapType, *ast.StarExpr:
+				// type Labels []string, type MyMap map[K]V, type MyPtr *T
+				if s := h.astTypeString(ts.Type); s != "" {
+					typeAliases[ts.Name.Name] = s
 				}
-				if len(field.Names) == 0 && typ == "GothicSharedContext" {
+				_ = t
+			case *ast.StructType:
+				si := structInfo{Name: ts.Name.Name}
+				for _, field := range t.Fields.List {
+					typ := h.astTypeString(field.Type)
+					tag := ""
 					if field.Tag != nil {
-						raw := strings.Trim(field.Tag.Value, "`")
-						si.KeyName = h.parseNameTag(raw)
-						si.Compression = h.parseCompressionTag(raw)
+						tag = h.parseGothicTag(strings.Trim(field.Tag.Value, "`"))
 					}
-					continue
+					if len(field.Names) == 0 && typ == "GothicSharedContext" {
+						if field.Tag != nil {
+							raw := strings.Trim(field.Tag.Value, "`")
+							si.KeyName = h.parseNameTag(raw)
+							si.Compression = h.parseCompressionTag(raw)
+						}
+						continue
+					}
+					for _, name := range field.Names {
+						si.Fields = append(si.Fields, fieldInfo{Name: name.Name, Type: typ, GothicTag: tag})
+					}
 				}
-				for _, name := range field.Names {
-					si.Fields = append(si.Fields, fieldInfo{Name: name.Name, Type: typ, GothicTag: tag})
-				}
+				structs = append(structs, si)
 			}
-			structs = append(structs, si)
 		}
 	}
-	return structs
+	return structs, typeAliases
 }
 
 func (h *WasmHelper) astTypeString(expr ast.Expr) string {
@@ -1078,6 +1137,8 @@ func (h *WasmHelper) astTypeString(expr ast.Expr) string {
 		return "*" + h.astTypeString(e.X)
 	case *ast.SelectorExpr:
 		return h.astTypeString(e.X) + "." + e.Sel.Name
+	case *ast.MapType:
+		return "map[" + h.astTypeString(e.Key) + "]" + h.astTypeString(e.Value)
 	}
 	return ""
 }
@@ -1114,71 +1175,155 @@ func (h *WasmHelper) parseCompressionTag(tag string) WasmCompression {
 
 // ─── Codec computation ────────────────────────────────────────────────────────
 
-func (h *WasmHelper) codecLines(fi fieldInfo, structNames map[string]bool) (enc, dec string, ok bool) {
+// primitiveCodec returns the encode/decode expressions for a single primitive value
+// referenced by variable name varExpr (e.g. "v.Field" or "_item").
+// Returns ("", "") if the type is not a known primitive.
+func primitiveCodec(typ, varExpr string) (enc, dec string) {
+	switch typ {
+	case "bool":
+		return fmt.Sprintf("e.Bool(bool(%s))", varExpr), fmt.Sprintf("%s = bool(d.Bool())", varExpr)
+	case "string":
+		return fmt.Sprintf("e.String(string(%s))", varExpr), fmt.Sprintf("%s = string(d.String())", varExpr)
+	case "int":
+		return fmt.Sprintf("e.I64(int64(%s))", varExpr), fmt.Sprintf("%s = int(d.I64())", varExpr)
+	case "int8":
+		return fmt.Sprintf("e.I32(int32(%s))", varExpr), fmt.Sprintf("%s = int8(d.I32())", varExpr)
+	case "int16":
+		return fmt.Sprintf("e.I32(int32(%s))", varExpr), fmt.Sprintf("%s = int16(d.I32())", varExpr)
+	case "int32", "rune":
+		return fmt.Sprintf("e.I32(int32(%s))", varExpr), fmt.Sprintf("%s = int32(d.I32())", varExpr)
+	case "int64":
+		return fmt.Sprintf("e.I64(int64(%s))", varExpr), fmt.Sprintf("%s = int64(d.I64())", varExpr)
+	case "uint8", "byte":
+		return fmt.Sprintf("e.U8(uint8(%s))", varExpr), fmt.Sprintf("%s = uint8(d.U8())", varExpr)
+	case "uint16":
+		return fmt.Sprintf("e.U16(uint16(%s))", varExpr), fmt.Sprintf("%s = uint16(d.U16())", varExpr)
+	case "uint32":
+		return fmt.Sprintf("e.U32(uint32(%s))", varExpr), fmt.Sprintf("%s = uint32(d.U32())", varExpr)
+	case "uint":
+		return fmt.Sprintf("e.U64(uint64(%s))", varExpr), fmt.Sprintf("%s = uint(d.U64())", varExpr)
+	case "uint64":
+		return fmt.Sprintf("e.U64(uint64(%s))", varExpr), fmt.Sprintf("%s = uint64(d.U64())", varExpr)
+	case "float32":
+		return fmt.Sprintf("e.F32(float32(%s))", varExpr), fmt.Sprintf("%s = float32(d.F32())", varExpr)
+	case "float64":
+		return fmt.Sprintf("e.F64(float64(%s))", varExpr), fmt.Sprintf("%s = float64(d.F64())", varExpr)
+	case "time.Time":
+		return fmt.Sprintf("e.I64(%s.UnixNano())", varExpr),
+			fmt.Sprintf("%s = time.Unix(0, d.I64())", varExpr)
+	}
+	return "", ""
+}
+
+func (h *WasmHelper) codecLines(fi fieldInfo, structNames map[string]bool, aliases map[string]string) (enc, dec string, err error) {
 	n := fi.Name
 	typ := fi.Type
 	tag := fi.GothicTag
 
 	if tag == "skip" {
-		return "", "", false
+		return "", "", nil
 	}
 
+	// Explicit gothic tag overrides — only valid on int/uint fields.
 	if tag != "" {
 		switch tag {
 		case "i32":
-			return fmt.Sprintf("e.I32(int32(v.%s))", n), fmt.Sprintf("v.%s = int(d.I32())", n), true
+			return fmt.Sprintf("e.I32(int32(v.%s))", n), fmt.Sprintf("v.%s = int(d.I32())", n), nil
 		case "i64":
-			return fmt.Sprintf("e.I64(int64(v.%s))", n), fmt.Sprintf("v.%s = int(d.I64())", n), true
+			return fmt.Sprintf("e.I64(int64(v.%s))", n), fmt.Sprintf("v.%s = int(d.I64())", n), nil
 		case "u32":
-			return fmt.Sprintf("e.U32(uint32(v.%s))", n), fmt.Sprintf("v.%s = uint(d.U32())", n), true
+			return fmt.Sprintf("e.U32(uint32(v.%s))", n), fmt.Sprintf("v.%s = uint(d.U32())", n), nil
 		case "u64":
-			return fmt.Sprintf("e.U64(uint64(v.%s))", n), fmt.Sprintf("v.%s = uint(d.U64())", n), true
+			return fmt.Sprintf("e.U64(uint64(v.%s))", n), fmt.Sprintf("v.%s = uint(d.U64())", n), nil
+		default:
+			return "", "", fmt.Errorf("unknown gothic tag %q (valid: skip, i32, i64, u32, u64)", tag)
 		}
 	}
 
-	switch typ {
-	case "bool":
-		return fmt.Sprintf("e.Bool(v.%s)", n), fmt.Sprintf("v.%s = d.Bool()", n), true
-	case "string":
-		return fmt.Sprintf("e.String(v.%s)", n), fmt.Sprintf("v.%s = d.String()", n), true
-	case "[]byte":
-		return fmt.Sprintf("e.Bytes(v.%s)", n), fmt.Sprintf("v.%s = d.Bytes()", n), true
-	case "int":
-		return fmt.Sprintf("e.I64(int64(v.%s))", n), fmt.Sprintf("v.%s = int(d.I64())", n), true
-	case "int8", "int16":
-		return fmt.Sprintf("e.I32(int32(v.%s))", n), fmt.Sprintf("v.%s = %s(d.I32())", n, typ), true
-	case "int32", "rune":
-		return fmt.Sprintf("e.I32(v.%s)", n), fmt.Sprintf("v.%s = d.I32()", n), true
-	case "int64":
-		return fmt.Sprintf("e.I64(v.%s)", n), fmt.Sprintf("v.%s = d.I64()", n), true
-	case "uint8", "byte":
-		return fmt.Sprintf("e.U8(v.%s)", n), fmt.Sprintf("v.%s = d.U8()", n), true
-	case "uint16":
-		return fmt.Sprintf("e.U16(v.%s)", n), fmt.Sprintf("v.%s = d.U16()", n), true
-	case "uint32":
-		return fmt.Sprintf("e.U32(v.%s)", n), fmt.Sprintf("v.%s = d.U32()", n), true
-	case "uint", "uint64":
-		return fmt.Sprintf("e.U64(uint64(v.%s))", n), fmt.Sprintf("v.%s = %s(d.U64())", n, typ), true
-	case "float32":
-		return fmt.Sprintf("e.F32(v.%s)", n), fmt.Sprintf("v.%s = d.F32()", n), true
-	case "float64":
-		return fmt.Sprintf("e.F64(v.%s)", n), fmt.Sprintf("v.%s = d.F64()", n), true
+	// Resolve type alias to its underlying type for codec selection, while keeping
+	// the original type name for cast expressions in the generated code.
+	resolvedTyp := typ
+	if underlying, ok := aliases[typ]; ok {
+		resolvedTyp = underlying
 	}
 
-	if strings.HasPrefix(typ, "[]") {
-		elem := typ[2:]
-		return h.sliceCodecLines(n, elem, structNames)
+	// Use the resolved type for pattern matching (handles complex type aliases like
+	// `type Labels []string`, `type MyData []byte`, `type MyItem Item`).
+	effectiveTyp := typ
+	if resolvedTyp != typ {
+		effectiveTyp = resolvedTyp
 	}
 
-	if structNames[typ] {
-		return fmt.Sprintf("_encode_%s(v.%s, e)", typ, n),
-			fmt.Sprintf("v.%s = _decode_%s(d)", n, typ), true
+	// Special case: []byte is a single Bytes call, not a slice loop.
+	// Check both original and resolved type so `type MyData []byte` also hits this path.
+	if effectiveTyp == "[]byte" {
+		return fmt.Sprintf("e.Bytes(v.%s)", n), fmt.Sprintf("v.%s = d.Bytes()", n), nil
 	}
 
-	return "", "", false
+	// Primitive field.
+	if pe, pd := primitiveCodec(resolvedTyp, "v."+n); pe != "" {
+		if resolvedTyp != typ {
+			// Type alias — fix decode to cast back to the alias type.
+			pd = fmt.Sprintf("{ _v := %s; v.%s = %s(_v) }", strings.Replace(pd, "v."+n+" = ", "", 1), n, typ)
+		}
+		return pe, pd, nil
+	}
+
+	// Slice field.
+	if strings.HasPrefix(effectiveTyp, "[]") {
+		elem := effectiveTyp[2:]
+		return h.sliceCodecLines(n, elem, structNames, aliases)
+	}
+
+	// Map field: map[K]V where K is a primitive and V is a primitive or known struct.
+	if strings.HasPrefix(effectiveTyp, "map[") {
+		return h.mapCodecLines(n, effectiveTyp, structNames, aliases)
+	}
+
+	// Pointer field: *T
+	if strings.HasPrefix(effectiveTyp, "*") {
+		return h.pointerCodecLines(n, effectiveTyp[1:], structNames, aliases)
+	}
+
+	// Known struct defined in src/context/ — check both original and resolved name so
+	// `type MyItem Item` (a struct-type alias) also dispatches to the right encoder.
+	structTyp := typ
+	if !structNames[typ] && structNames[effectiveTyp] {
+		structTyp = effectiveTyp
+	}
+	if structNames[structTyp] {
+		return fmt.Sprintf("_encode_%s(v.%s, e)", structTyp, n),
+			fmt.Sprintf("v.%s = _decode_%s(d)", n, structTyp), nil
+	}
+
+	return "", "", fmt.Errorf(
+		"unsupported type %q — supported: primitives, []T, map[K]V, *T, time.Time, and structs defined in src/context/\n"+
+			"  Tip: add `gothic:\"skip\"` to exclude this field from the context wire format",
+		typ,
+	)
 }
 
-func (h *WasmHelper) sliceCodecLines(fieldName, elem string, structNames map[string]bool) (enc, dec string, ok bool) {
+func (h *WasmHelper) sliceCodecLines(fieldName, elem string, structNames map[string]bool, aliases map[string]string) (enc, dec string, err error) {
+	// [][]T — nested slice
+	if strings.HasPrefix(elem, "[]") {
+		inner := elem[2:]
+		innerEnc, innerDec, err := h.sliceCodecLines("_inner", inner, structNames, aliases)
+		if err != nil {
+			return "", "", fmt.Errorf("[]%s: %w", elem, err)
+		}
+		// innerEnc/Dec reference "_inner" — wrap in a helper closure inline
+		enc = fmt.Sprintf(
+			"{ e.U32(uint32(len(v.%s))); for _, _row := range v.%s { var _inner []%s; _ = _inner; %s } }",
+			fieldName, fieldName, inner, strings.ReplaceAll(innerEnc, "v._inner", "_row"))
+		dec = fmt.Sprintf(
+			"{ _n := int(d.U32()); v.%s = make([][]%s, _n); for _i := range v.%s { var _inner []%s; %s; v.%s[_i] = _inner } }",
+			fieldName, inner, fieldName, inner,
+			strings.ReplaceAll(innerDec, "v._inner", "_inner"),
+			fieldName)
+		return enc, dec, nil
+	}
+
+	// []KnownStruct
 	if structNames[elem] {
 		enc = fmt.Sprintf(
 			"{ e.U32(uint32(len(v.%s))); for _, _item := range v.%s { _encode_%s(_item, e) } }",
@@ -1186,18 +1331,116 @@ func (h *WasmHelper) sliceCodecLines(fieldName, elem string, structNames map[str
 		dec = fmt.Sprintf(
 			"{ _n := int(d.U32()); v.%s = make([]%s, _n); for _i := range v.%s { v.%s[_i] = _decode_%s(d) } }",
 			fieldName, elem, fieldName, fieldName, elem)
-		return enc, dec, true
+		return enc, dec, nil
 	}
-	if elem == "string" {
+
+	// []primitive (including type aliases over primitives)
+	resolvedElem := elem
+	if underlying, ok := aliases[elem]; ok {
+		resolvedElem = underlying
+	}
+	if pe, pd := primitiveCodec(resolvedElem, "_item"); pe != "" {
+		if resolvedElem != elem {
+			// Decode: primitiveCodec returns the underlying type; cast back to the alias.
+			rhs := strings.TrimPrefix(pd, "_item = ")
+			pd = fmt.Sprintf("_item = %s(%s)", elem, rhs)
+		}
 		enc = fmt.Sprintf(
-			"{ e.U32(uint32(len(v.%s))); for _, _s := range v.%s { e.String(_s) } }",
-			fieldName, fieldName)
+			"{ e.U32(uint32(len(v.%s))); for _, _item := range v.%s { %s } }",
+			fieldName, fieldName, pe)
 		dec = fmt.Sprintf(
-			"{ _n := int(d.U32()); v.%s = make([]string, _n); for _i := range v.%s { v.%s[_i] = d.String() } }",
-			fieldName, fieldName, fieldName)
-		return enc, dec, true
+			"{ _n := int(d.U32()); v.%s = make([]%s, _n); for _i := range v.%s { var _item %s; %s; v.%s[_i] = _item } }",
+			fieldName, elem, fieldName, elem, pd, fieldName)
+		return enc, dec, nil
 	}
-	return "", "", false
+
+	return "", "", fmt.Errorf("slice element type %q is not supported", elem)
+}
+
+func (h *WasmHelper) mapCodecLines(fieldName, typ string, structNames map[string]bool, aliases map[string]string) (enc, dec string, err error) {
+	// Parse "map[K]V"
+	inner := typ[4:] // strip "map["
+	bracket := strings.Index(inner, "]")
+	if bracket < 0 {
+		return "", "", fmt.Errorf("malformed map type %q", typ)
+	}
+	keyTyp := inner[:bracket]
+	valTyp := inner[bracket+1:]
+
+	resolvedKeyTyp := keyTyp
+	if underlying, ok := aliases[keyTyp]; ok {
+		resolvedKeyTyp = underlying
+	}
+	resolvedValTyp := valTyp
+	if underlying, ok := aliases[valTyp]; ok {
+		resolvedValTyp = underlying
+	}
+
+	keyEnc, keyDec := primitiveCodec(resolvedKeyTyp, "_k")
+	if keyEnc == "" {
+		return "", "", fmt.Errorf("map key type %q is not a supported primitive", keyTyp)
+	}
+	if resolvedKeyTyp != keyTyp {
+		rhs := strings.TrimPrefix(keyDec, "_k = ")
+		keyDec = fmt.Sprintf("_k = %s(%s)", keyTyp, rhs)
+	}
+
+	var valEnc, valDec string
+	if ve, vd := primitiveCodec(resolvedValTyp, "_v"); ve != "" {
+		valEnc, valDec = ve, vd
+		if resolvedValTyp != valTyp {
+			rhs := strings.TrimPrefix(valDec, "_v = ")
+			valDec = fmt.Sprintf("_v = %s(%s)", valTyp, rhs)
+		}
+	} else if structNames[valTyp] {
+		valEnc = fmt.Sprintf("_encode_%s(_v, e)", valTyp)
+		valDec = fmt.Sprintf("_v = _decode_%s(d)", valTyp)
+	} else {
+		return "", "", fmt.Errorf("map value type %q is not a supported primitive or known struct", valTyp)
+	}
+
+	enc = fmt.Sprintf(
+		"{ e.U32(uint32(len(v.%s))); for _k, _v := range v.%s { %s; %s } }",
+		fieldName, fieldName, keyEnc, valEnc)
+	dec = fmt.Sprintf(
+		"{ _n := int(d.U32()); v.%s = make(%s, _n); for _i := 0; _i < _n; _i++ { var _k %s; var _v %s; %s; %s; v.%s[_k] = _v } }",
+		fieldName, typ, keyTyp, valTyp, keyDec, valDec, fieldName)
+	return enc, dec, nil
+}
+
+func (h *WasmHelper) pointerCodecLines(fieldName, baseTyp string, structNames map[string]bool, aliases map[string]string) (enc, dec string, err error) {
+	var valEnc, valDec string
+
+	resolvedBase := baseTyp
+	if underlying, ok := aliases[baseTyp]; ok {
+		resolvedBase = underlying
+	}
+
+	if pe, pd := primitiveCodec(resolvedBase, "_pv"); pe != "" {
+		valEnc = pe
+		valDec = pd
+		if resolvedBase != baseTyp {
+			// Decode: cast back from the underlying type to the alias.
+			rhs := strings.TrimPrefix(valDec, "_pv = ")
+			valDec = fmt.Sprintf("_pv = %s(%s)", baseTyp, rhs)
+		}
+	} else if structNames[baseTyp] {
+		valEnc = fmt.Sprintf("_encode_%s(*v.%s, e)", baseTyp, fieldName)
+		valDec = fmt.Sprintf("{ _sv := _decode_%s(d); v.%s = &_sv }", baseTyp, fieldName)
+		enc = fmt.Sprintf("{ if v.%s == nil { e.U8(0) } else { e.U8(1); %s } }", fieldName, valEnc)
+		dec = fmt.Sprintf("{ if d.U8() != 0 { %s } }", valDec)
+		return enc, dec, nil
+	} else {
+		return "", "", fmt.Errorf("pointer element type %q is not a supported primitive or known struct", baseTyp)
+	}
+
+	enc = fmt.Sprintf(
+		"{ if v.%s == nil { e.U8(0) } else { e.U8(1); _pv := *v.%s; %s } }",
+		fieldName, fieldName, valEnc)
+	dec = fmt.Sprintf(
+		"{ if d.U8() != 0 { var _pv %s; %s; v.%s = &_pv } }",
+		baseTyp, valDec, fieldName)
+	return enc, dec, nil
 }
 
 // ─── Source rewriting ─────────────────────────────────────────────────────────
