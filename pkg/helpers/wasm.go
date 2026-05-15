@@ -1354,6 +1354,49 @@ func (h *WasmHelper) sliceCodecLines(fieldName, elem string, structNames map[str
 		return enc, dec, nil
 	}
 
+	// []*T — slice of pointers (nil tag byte + value), covering both primitive/alias and struct bases.
+	if strings.HasPrefix(elem, "*") {
+		base := elem[1:]
+		resolvedBase := base
+		if underlying, ok := aliases[base]; ok {
+			resolvedBase = underlying
+		}
+
+		if pe, pd := primitiveCodec(resolvedBase, "_pv"); pe != "" {
+			if resolvedBase != base {
+				rhs := strings.TrimPrefix(pd, "_pv = ")
+				pd = fmt.Sprintf("_pv = %s(%s)", base, rhs)
+			}
+			itemEnc := fmt.Sprintf("if _item == nil { e.U8(0) } else { e.U8(1); _pv := *_item; %s }", pe)
+			itemDec := fmt.Sprintf("if d.U8() != 0 { var _pv %s; %s; v.%s[_i] = &_pv }", base, pd, fieldName)
+			enc = fmt.Sprintf(
+				"{ e.U32(uint32(len(v.%s))); for _, _item := range v.%s { %s } }",
+				fieldName, fieldName, itemEnc)
+			dec = fmt.Sprintf(
+				"{ _n := int(d.U32()); v.%s = make([]%s, _n); for _i := range v.%s { %s } }",
+				fieldName, elem, fieldName, itemDec)
+			return enc, dec, nil
+		}
+
+		structT := base
+		if !structNames[base] && structNames[resolvedBase] {
+			structT = resolvedBase
+		}
+		if structNames[structT] {
+			itemEnc := fmt.Sprintf("if _item == nil { e.U8(0) } else { e.U8(1); _encode_%s(*_item, e) }", structT)
+			itemDec := fmt.Sprintf("if d.U8() != 0 { _sv := _decode_%s(d); v.%s[_i] = &_sv }", structT, fieldName)
+			enc = fmt.Sprintf(
+				"{ e.U32(uint32(len(v.%s))); for _, _item := range v.%s { %s } }",
+				fieldName, fieldName, itemEnc)
+			dec = fmt.Sprintf(
+				"{ _n := int(d.U32()); v.%s = make([]%s, _n); for _i := range v.%s { %s } }",
+				fieldName, elem, fieldName, itemDec)
+			return enc, dec, nil
+		}
+
+		return "", "", fmt.Errorf("slice element pointer type %q base type %q is not a supported primitive or known struct", elem, base)
+	}
+
 	return "", "", fmt.Errorf("slice element type %q is not supported", elem)
 }
 
@@ -1391,6 +1434,31 @@ func (h *WasmHelper) mapCodecLines(fieldName, typ string, structNames map[string
 		if resolvedValTyp != valTyp {
 			rhs := strings.TrimPrefix(valDec, "_v = ")
 			valDec = fmt.Sprintf("_v = %s(%s)", valTyp, rhs)
+		}
+	} else if strings.HasPrefix(valTyp, "*") {
+		// map[K]*V — pointer value: nil tag byte + encoded value.
+		baseVal := valTyp[1:]
+		resolvedBaseVal := baseVal
+		if underlying, ok := aliases[baseVal]; ok {
+			resolvedBaseVal = underlying
+		}
+		if pe, pd := primitiveCodec(resolvedBaseVal, "_pv"); pe != "" {
+			if resolvedBaseVal != baseVal {
+				rhs := strings.TrimPrefix(pd, "_pv = ")
+				pd = fmt.Sprintf("_pv = %s(%s)", baseVal, rhs)
+			}
+			valEnc = fmt.Sprintf("{ if _v == nil { e.U8(0) } else { e.U8(1); _pv := *_v; %s } }", pe)
+			valDec = fmt.Sprintf("if d.U8() != 0 { var _pv %s; %s; _v = &_pv }", baseVal, pd)
+		} else {
+			structT := baseVal
+			if !structNames[baseVal] && structNames[resolvedBaseVal] {
+				structT = resolvedBaseVal
+			}
+			if !structNames[structT] {
+				return "", "", fmt.Errorf("map value pointer type %q base type is not a supported primitive or known struct", valTyp)
+			}
+			valEnc = fmt.Sprintf("{ if _v == nil { e.U8(0) } else { e.U8(1); _encode_%s(*_v, e) } }", structT)
+			valDec = fmt.Sprintf("if d.U8() != 0 { _sv := _decode_%s(d); _v = &_sv }", structT)
 		}
 	} else if structNames[valTyp] {
 		valEnc = fmt.Sprintf("_encode_%s(_v, e)", valTyp)
