@@ -74,20 +74,17 @@ func ensureProxied() js.Value {
 }
 
 // findScope walks up from window.event.target to find the nearest [data-gothic-scope].
+//
+// The DOM walk lives in JS (window.__gothicFindScope, installed by the
+// bootstrap script) and returns a plain string. We bounce through JS to avoid
+// boxing the MouseEvent / target / closest() result through TinyGo's
+// js.Value slot table — those refs are never finalized (TinyGo's wasm_exec
+// only calls finalizeRef for strings), so any per-click js.Value would
+// leak a permanent _values[] entry on every event. Returning a string and
+// calling .String() goes through the jsString path, which DOES finalize,
+// so this call is allocation-stable across an arbitrary number of clicks.
 func findScope() string {
-	event := js.Global().Get("event")
-	if event.IsUndefined() || event.IsNull() {
-		return ""
-	}
-	target := event.Get("target")
-	if target.IsUndefined() || target.IsNull() {
-		return ""
-	}
-	el := target.Call("closest", "[data-gothic-scope]")
-	if el.IsNull() || el.IsUndefined() {
-		return ""
-	}
-	return el.Get("dataset").Get("gothicScope").String()
+	return js.Global().Call("__gothicFindScope").String()
 }
 
 // dispatch / dispatchVoid / dispatchString / dispatchBool are intra-module

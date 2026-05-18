@@ -352,12 +352,18 @@ func ListenCtxSetReq(keyName string, fn func(string)) {
 	js.Global().Get("document").Call("addEventListener", fullKey, listener)
 }
 
+// pingEvents caches one CustomEvent JS object per keyName so we don't allocate
+// a new JS value (and a permanent TinyGo bridge slot) on every ping.
+var pingEvents = map[string]js.Value{}
+
 // PingCtxManager dispatches a ping to the context manager asking for an online ack.
 func PingCtxManager(keyName string) {
-	js.Global().Get("document").Call(
-		"dispatchEvent",
-		js.Global().Get("CustomEvent").New("gothic:ctx-ping:"+keyName),
-	)
+	evt, ok := pingEvents[keyName]
+	if !ok {
+		evt = js.Global().Get("CustomEvent").New("gothic:ctx-ping:" + keyName)
+		pingEvents[keyName] = evt
+	}
+	js.Global().Get("document").Call("dispatchEvent", evt)
 }
 
 // ListenCtxOnline registers a handler that receives the manager's online ack with current state.

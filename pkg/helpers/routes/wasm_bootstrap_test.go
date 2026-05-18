@@ -152,6 +152,80 @@ func TestInjectWasmEnvelope_EndToEnd_Fragment(t *testing.T) {
 	}
 }
 
+// TestInjectWasmBootstrap_CtxSetPersistentBuffer verifies the __gothic_ctx.set
+// implementation uses a persistent per-key Uint8Array backed by a doubling
+// ArrayBuffer, instead of allocating a fresh Uint8Array via .slice() per
+// broadcast. The TinyGo wasm_exec bridge only finalizes string refs, so every
+// per-broadcast Uint8Array leaks into the _values[] slot table — keeping a
+// persistent buffer means each key occupies exactly one slot for its lifetime.
+func TestInjectWasmBootstrap_CtxSetPersistentBuffer(t *testing.T) {
+	in := []byte(`<html><body>x</body></html>`)
+	out := injectWasmBootstrap(in, "counter", GZIP, "abc")
+
+	wants := [][]byte{
+		[]byte(`var _bufs={};`),
+		[]byte(`var _views={};`),
+		[]byte(`byteLen<128?128:byteLen*2`),
+		[]byte(`view.set(src)`),
+		[]byte(`_state[keyName]=view`),
+	}
+	for _, w := range wants {
+		if !bytes.Contains(out, w) {
+			t.Errorf("expected bootstrap to contain %q, got: %s", w, out)
+		}
+	}
+}
+
+// TestInjectWasmBootstrap_CtxSetNoSlice is a regression guard: the old
+// implementation allocated a fresh Uint8Array per broadcast via .slice(),
+// which leaked through TinyGo's wasm_exec _values[] slot table on every
+// context update. If this substring ever reappears, the leak is back.
+func TestInjectWasmBootstrap_CtxSetNoSlice(t *testing.T) {
+	in := []byte(`<html><body>x</body></html>`)
+	out := injectWasmBootstrap(in, "counter", GZIP, "abc")
+
+	bad := []byte(`new Uint8Array(inst.exports.memory.buffer,offset,byteLen).slice()`)
+	if bytes.Contains(out, bad) {
+		t.Errorf("bootstrap must not allocate a fresh Uint8Array per set() via .slice(); found %q in: %s", bad, out)
+	}
+}
+
+// TestInjectWasmBootstrap_FindScopeHelperInjected verifies the bootstrap
+// installs window.__gothicFindScope, which moves the per-click DOM walk out
+// of Go and into JS. The Go side calls this helper and reads back a string,
+// which is the only js.Value kind TinyGo's wasm_exec finalizes — boxing a
+// MouseEvent / Element through js.Value would leak a _values[] slot per
+// click because those refs are never released.
+func TestInjectWasmBootstrap_FindScopeHelperInjected(t *testing.T) {
+	in := []byte(`<html><body>x</body></html>`)
+	out := injectWasmBootstrap(in, "counter", GZIP, "abc")
+
+	wants := [][]byte{
+		[]byte(`window.__gothicFindScope=function()`),
+		[]byte(`e.target.closest('[data-gothic-scope]')`),
+		[]byte(`el.dataset.gothicScope`),
+	}
+	for _, w := range wants {
+		if !bytes.Contains(out, w) {
+			t.Errorf("expected bootstrap to contain %q, got: %s", w, out)
+		}
+	}
+}
+
+// TestInjectWasmBootstrap_FindScopeOnlyDeclaredOnce guards the per-page-once
+// install semantics: the helper is declared inside the if(!window.__gothic_ctx)
+// guard and gated by its own if(!window.__gothicFindScope) check, so multiple
+// WASM modules on the same page must not redeclare it.
+func TestInjectWasmBootstrap_FindScopeOnlyDeclaredOnce(t *testing.T) {
+	in := []byte(`<html><body>x</body></html>`)
+	out := injectWasmBootstrap(in, "counter", GZIP, "abc")
+
+	needle := []byte(`if(!window.__gothicFindScope)`)
+	if got := bytes.Count(out, needle); got != 1 {
+		t.Errorf("expected %q to appear exactly once in bootstrap, got %d in: %s", needle, got, out)
+	}
+}
+
 // TestInjectWasmEnvelope_UniqueAcrossCalls confirms the duplicate-component
 // regression contract: two renders of the same component produce envelopes
 // with distinct instance ids embedded BOTH on the wrapper AND inside the JS

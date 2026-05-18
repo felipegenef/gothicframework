@@ -94,13 +94,28 @@ func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMe
         window.__gothic_ctx=(function(){
             var _state={};
             var _subs={};
+            var _bufs={};
+            var _views={};
             return{
                 set:function(keyName,ptrI32,byteLen,inst){
                     var offset=ptrI32>>>0;
-                    var copy=new Uint8Array(inst.exports.memory.buffer,offset,byteLen).slice();
-                    _state[keyName]=copy;
+                    var src=new Uint8Array(inst.exports.memory.buffer,offset,byteLen);
+                    var buf=_bufs[keyName];
+                    if(!buf||buf.byteLength<byteLen){
+                        var cap=byteLen<128?128:byteLen*2;
+                        buf=new ArrayBuffer(cap);
+                        _bufs[keyName]=buf;
+                        _views[keyName]=null;
+                    }
+                    var view=_views[keyName];
+                    if(!view||view.byteLength!==byteLen){
+                        view=new Uint8Array(buf,0,byteLen);
+                        _views[keyName]=view;
+                    }
+                    view.set(src);
+                    _state[keyName]=view;
                     var handlers=_subs[keyName];
-                    if(handlers){handlers.forEach(function(h){queueMicrotask(function(){h(copy);});});}
+                    if(handlers){handlers.forEach(function(h){queueMicrotask(function(){h(view);});});}
                 },
                 subscribe:function(keyName,fn){(_subs[keyName]=_subs[keyName]||[]).push(fn);},
                 get:function(keyName){return _state[keyName]||null;}
@@ -110,6 +125,14 @@ func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMe
     if(!window.__gothicDispatchAsync){
         window.__gothicDispatchAsync=function(name){
             queueMicrotask(function(){document.dispatchEvent(new CustomEvent(name));});
+        };
+    }
+    if(!window.__gothicFindScope){
+        window.__gothicFindScope=function(){
+            var e=window.event;
+            if(!e||!e.target)return'';
+            var el=e.target.closest('[data-gothic-scope]');
+            return el?(el.dataset.gothicScope||''):'';
         };
     }
     (async function(){
