@@ -107,77 +107,8 @@ func (c *wasmInjectedComponent) Render(ctx context.Context, w io.Writer) error {
 	if err := c.inner.Render(ctx, &buf); err != nil {
 		return err
 	}
-	html := injectGothicScope(buf.Bytes(), c.wasmName)
-	_, err := w.Write(injectWasmBootstrap(html, c.wasmName, c.compression))
+	_, err := w.Write(injectWasmEnvelope(buf.Bytes(), c.wasmName, c.compression))
 	return err
-}
-
-// injectGothicScope marks the scope boundary for a WASM instance.
-// Uses data-gothic-wasm (static, no random value) so the HTML is CDN-cacheable.
-// The browser-side bootstrap script generates the unique data-gothic-scope ID at runtime.
-func injectGothicScope(html []byte, wasmName string) []byte {
-	attr := `data-gothic-wasm="` + wasmName + `"`
-	if bytes.Contains(html, []byte("<body")) {
-		return bytes.Replace(html, []byte("<body"), []byte("<body "+attr), 1)
-	}
-	var buf bytes.Buffer
-	buf.WriteString(`<div ` + attr + ` style="display:contents">`)
-	buf.Write(html)
-	buf.WriteString(`</div>`)
-	return buf.Bytes()
-}
-
-// injectWasmBootstrap injects the WASM loader script.
-// The scope ID is generated client-side via Math.random() so the HTML remains
-// fully static and CDN-cacheable regardless of route type.
-func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMethod) []byte {
-	isFullPage := bytes.Contains(html, []byte("</body>"))
-
-	// For full pages the scope is on <body>; for fragments it's on the wrapper div
-	// immediately before the script tag (previousElementSibling).
-	var findEl string
-	if isFullPage {
-		findEl = `document.querySelector('body[data-gothic-wasm="` + wasmName + `"]')`
-	} else {
-		findEl = `(document.currentScript&&document.currentScript.previousElementSibling)` +
-			`||document.querySelector('[data-gothic-wasm="` + wasmName + `"]:not([data-gothic-scope])')`
-	}
-
-	ext := ".wasm.gz"
-	if compression == BROTLI {
-		ext = ".wasm.br"
-	}
-
-	script := fmt.Sprintf(`<script>
-(function(){
-    var wn='%s';
-    var el=(%s);
-    if(!el)return;
-    var id=wn+'-'+(Math.random()*0xFFFFFFFF>>>0).toString(16).padStart(8,'0');
-    el.setAttribute('data-gothic-scope',id);
-    (async function(){
-        if(typeof Go==='undefined'){
-            await new Promise(function(res,rej){
-                var s=document.createElement('script');
-                s.src='/public/wasm_exec.js';
-                s.onload=res;s.onerror=rej;
-                document.head.appendChild(s);
-            });
-        }
-        var go=new Go();
-        var r=await WebAssembly.instantiateStreaming(
-            fetch('/public/wasm/'+wn+'%s'),go.importObject
-        );
-        window.__gothicCurrentModule=id;
-        go.run(r.instance);
-    })();
-})();
-</script>`, wasmName, findEl, ext)
-
-	if isFullPage {
-		return bytes.Replace(html, []byte("</body>"), []byte(script+"</body>"), 1)
-	}
-	return append(html, []byte(script)...)
 }
 
 // emptyComponent renders nothing — used as the inner component for context managers.

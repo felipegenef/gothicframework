@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"syscall/js"
 	"time"
+	"unsafe"
 )
 
 // GothicSharedContext is a zero-size marker type embedded in context structs.
@@ -33,135 +34,131 @@ type ContextKey[T any] struct {
 }
 
 // ── Primitive key factories ──────────────────────────────────────────────────
+//
+// All 16 primitive ContextKey factories share the same shape: build a
+// ContextKey[T] with a strconv-based encode and a strconv-based decode. The
+// helper `newPrimitiveKey` removes the boilerplate. Since the existing
+// factories already returned generic types, TinyGo monomorphizes each
+// instantiation just as it did before (no `interface{}`, no reflection).
+
+// newPrimitiveKey builds a ContextKey[T] for a primitive value using the
+// provided strconv-based encode and decode functions.
+func newPrimitiveKey[T any](name string, encode func(T) string, decode func(string) T) ContextKey[T] {
+	return ContextKey[T]{Name: name, encode: encode, decode: decode}
+}
 
 func BoolKey(name string) ContextKey[bool] {
-	return ContextKey[bool]{
-		Name:   name,
-		encode: strconv.FormatBool,
-		decode: func(s string) bool { b, _ := strconv.ParseBool(s); return b },
-	}
+	return newPrimitiveKey(name,
+		strconv.FormatBool,
+		func(s string) bool { b, _ := strconv.ParseBool(s); return b },
+	)
 }
 
 func StringKey(name string) ContextKey[string] {
-	return ContextKey[string]{
-		Name:   name,
-		encode: func(s string) string { return s },
-		decode: func(s string) string { return s },
-	}
+	return newPrimitiveKey(name,
+		func(s string) string { return s },
+		func(s string) string { return s },
+	)
 }
 
 func IntKey(name string) ContextKey[int] {
-	return ContextKey[int]{
-		Name:   name,
-		encode: strconv.Itoa,
-		decode: func(s string) int { n, _ := strconv.Atoi(s); return n },
-	}
+	return newPrimitiveKey(name,
+		strconv.Itoa,
+		func(s string) int { n, _ := strconv.Atoi(s); return n },
+	)
 }
 
 func Int8Key(name string) ContextKey[int8] {
-	return ContextKey[int8]{
-		Name:   name,
-		encode: func(v int8) string { return strconv.FormatInt(int64(v), 10) },
-		decode: func(s string) int8 { n, _ := strconv.ParseInt(s, 10, 8); return int8(n) },
-	}
+	return newPrimitiveKey(name,
+		func(v int8) string { return strconv.FormatInt(int64(v), 10) },
+		func(s string) int8 { n, _ := strconv.ParseInt(s, 10, 8); return int8(n) },
+	)
 }
 
 func Int16Key(name string) ContextKey[int16] {
-	return ContextKey[int16]{
-		Name:   name,
-		encode: func(v int16) string { return strconv.FormatInt(int64(v), 10) },
-		decode: func(s string) int16 { n, _ := strconv.ParseInt(s, 10, 16); return int16(n) },
-	}
+	return newPrimitiveKey(name,
+		func(v int16) string { return strconv.FormatInt(int64(v), 10) },
+		func(s string) int16 { n, _ := strconv.ParseInt(s, 10, 16); return int16(n) },
+	)
 }
 
 func Int32Key(name string) ContextKey[int32] {
-	return ContextKey[int32]{
-		Name:   name,
-		encode: func(v int32) string { return strconv.FormatInt(int64(v), 10) },
-		decode: func(s string) int32 { n, _ := strconv.ParseInt(s, 10, 32); return int32(n) },
-	}
+	return newPrimitiveKey(name,
+		func(v int32) string { return strconv.FormatInt(int64(v), 10) },
+		func(s string) int32 { n, _ := strconv.ParseInt(s, 10, 32); return int32(n) },
+	)
 }
 
 func Int64Key(name string) ContextKey[int64] {
-	return ContextKey[int64]{
-		Name:   name,
-		encode: func(v int64) string { return strconv.FormatInt(v, 10) },
-		decode: func(s string) int64 { n, _ := strconv.ParseInt(s, 10, 64); return n },
-	}
+	return newPrimitiveKey(name,
+		func(v int64) string { return strconv.FormatInt(v, 10) },
+		func(s string) int64 { n, _ := strconv.ParseInt(s, 10, 64); return n },
+	)
 }
 
 func UintKey(name string) ContextKey[uint] {
-	return ContextKey[uint]{
-		Name:   name,
-		encode: func(v uint) string { return strconv.FormatUint(uint64(v), 10) },
-		decode: func(s string) uint { n, _ := strconv.ParseUint(s, 10, 64); return uint(n) },
-	}
+	return newPrimitiveKey(name,
+		func(v uint) string { return strconv.FormatUint(uint64(v), 10) },
+		func(s string) uint { n, _ := strconv.ParseUint(s, 10, 64); return uint(n) },
+	)
 }
 
 func Uint8Key(name string) ContextKey[uint8] {
-	return ContextKey[uint8]{
-		Name:   name,
-		encode: func(v uint8) string { return strconv.FormatUint(uint64(v), 10) },
-		decode: func(s string) uint8 { n, _ := strconv.ParseUint(s, 10, 8); return uint8(n) },
-	}
+	return newPrimitiveKey(name,
+		func(v uint8) string { return strconv.FormatUint(uint64(v), 10) },
+		func(s string) uint8 { n, _ := strconv.ParseUint(s, 10, 8); return uint8(n) },
+	)
 }
 
 func Uint16Key(name string) ContextKey[uint16] {
-	return ContextKey[uint16]{
-		Name:   name,
-		encode: func(v uint16) string { return strconv.FormatUint(uint64(v), 10) },
-		decode: func(s string) uint16 { n, _ := strconv.ParseUint(s, 10, 16); return uint16(n) },
-	}
+	return newPrimitiveKey(name,
+		func(v uint16) string { return strconv.FormatUint(uint64(v), 10) },
+		func(s string) uint16 { n, _ := strconv.ParseUint(s, 10, 16); return uint16(n) },
+	)
 }
 
 func Uint32Key(name string) ContextKey[uint32] {
-	return ContextKey[uint32]{
-		Name:   name,
-		encode: func(v uint32) string { return strconv.FormatUint(uint64(v), 10) },
-		decode: func(s string) uint32 { n, _ := strconv.ParseUint(s, 10, 32); return uint32(n) },
-	}
+	return newPrimitiveKey(name,
+		func(v uint32) string { return strconv.FormatUint(uint64(v), 10) },
+		func(s string) uint32 { n, _ := strconv.ParseUint(s, 10, 32); return uint32(n) },
+	)
 }
 
 func Uint64Key(name string) ContextKey[uint64] {
-	return ContextKey[uint64]{
-		Name:   name,
-		encode: func(v uint64) string { return strconv.FormatUint(v, 10) },
-		decode: func(s string) uint64 { n, _ := strconv.ParseUint(s, 10, 64); return n },
-	}
+	return newPrimitiveKey(name,
+		func(v uint64) string { return strconv.FormatUint(v, 10) },
+		func(s string) uint64 { n, _ := strconv.ParseUint(s, 10, 64); return n },
+	)
 }
 
 func Float32Key(name string) ContextKey[float32] {
-	return ContextKey[float32]{
-		Name:   name,
-		encode: func(v float32) string { return strconv.FormatFloat(float64(v), 'f', -1, 32) },
-		decode: func(s string) float32 { f, _ := strconv.ParseFloat(s, 32); return float32(f) },
-	}
+	return newPrimitiveKey(name,
+		func(v float32) string { return strconv.FormatFloat(float64(v), 'f', -1, 32) },
+		func(s string) float32 { f, _ := strconv.ParseFloat(s, 32); return float32(f) },
+	)
 }
 
 func Float64Key(name string) ContextKey[float64] {
-	return ContextKey[float64]{
-		Name:   name,
-		encode: func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) },
-		decode: func(s string) float64 { f, _ := strconv.ParseFloat(s, 64); return f },
-	}
+	return newPrimitiveKey(name,
+		func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) },
+		func(s string) float64 { f, _ := strconv.ParseFloat(s, 64); return f },
+	)
 }
 
 // RuneKey is IntKey for rune (= int32).
 func RuneKey(name string) ContextKey[rune] {
-	return ContextKey[rune]{
-		Name:   name,
-		encode: func(v rune) string { return strconv.FormatInt(int64(v), 10) },
-		decode: func(s string) rune { n, _ := strconv.ParseInt(s, 10, 32); return rune(n) },
-	}
+	return newPrimitiveKey(name,
+		func(v rune) string { return strconv.FormatInt(int64(v), 10) },
+		func(s string) rune { n, _ := strconv.ParseInt(s, 10, 32); return rune(n) },
+	)
 }
 
 // ByteKey is UintKey for byte (= uint8).
 func ByteKey(name string) ContextKey[byte] {
-	return ContextKey[byte]{
-		Name:   name,
-		encode: func(v byte) string { return strconv.FormatUint(uint64(v), 10) },
-		decode: func(s string) byte { n, _ := strconv.ParseUint(s, 10, 8); return byte(n) },
-	}
+	return newPrimitiveKey(name,
+		func(v byte) string { return strconv.FormatUint(uint64(v), 10) },
+		func(s string) byte { n, _ := strconv.ParseUint(s, 10, 8); return byte(n) },
+	)
 }
 
 // JsonKey returns a ContextKey for any struct or slice type, serialized as JSON.
@@ -192,6 +189,33 @@ func ensureContextStore() js.Value {
 	return store
 }
 
+// ── Direct-memory payload dispatch ──────────────────────────────────────────
+
+// dispatchHold keeps each key's payload slice alive until the next dispatch on
+// the same key overwrites it. The queueMicrotask callback in Gothic's bootstrap
+// JS reads directly from WASM linear memory via the raw pointer; the slice must
+// not be GC'd before that microtask fires.
+var dispatchHold = map[string][]byte{}
+
+// dispatchDirect writes encoded into a Go-owned buffer, passes the raw WASM
+// memory offset to __gothic_ctx.set (Bootstrap JS reads the bytes directly
+// from instance.exports.memory.buffer — no js.CopyBytesToJS, no Uint8Array
+// allocation, no _values[] entry for the payload), then fires an async event
+// so document listeners still receive it.
+func dispatchDirect(keyName, eventPrefix string, encoded []byte) {
+	buf := make([]byte, len(encoded))
+	copy(buf, encoded)
+	dispatchHold[eventPrefix+keyName] = buf
+
+	ptr := int32(uintptr(unsafe.Pointer(unsafe.SliceData(buf))))
+	js.Global().Get("__gothic_set").Get(moduleID()).Invoke(
+		js.ValueOf(eventPrefix+keyName),
+		js.ValueOf(ptr),
+		js.ValueOf(len(buf)),
+	)
+	js.Global().Call("__gothicDispatchAsync", js.ValueOf(eventPrefix+keyName))
+}
+
 // ── SharedCtxObservable ───────────────────────────────────────────────────────
 
 // SharedCtxObservable is a reactive Observable bound to a shared context key.
@@ -210,10 +234,7 @@ func (s *SharedCtxObservable[T]) Set(v T) {
 	s.inner.notifyAll()
 	encoded := s.key.encode(v)
 	ensureContextStore().Set(s.key.Name, encoded)
-	init := js.Global().Get("Object").New()
-	init.Set("detail", encoded)
-	event := js.Global().Get("CustomEvent").New("gothic:context:"+s.key.Name, init)
-	js.Global().Get("document").Call("dispatchEvent", event)
+	dispatchDirect(s.key.Name, "gothic:context:", []byte(encoded))
 }
 
 func (s *SharedCtxObservable[T]) addEffect(e *Subscription)    { s.inner.addEffect(e) }
@@ -280,72 +301,85 @@ func ReadCtxStore(keyName string) (string, bool) {
 // BroadcastCtxEncoded writes encoded to the JS store and dispatches a CustomEvent.
 func BroadcastCtxEncoded(keyName, encoded string) {
 	ensureContextStore().Set(keyName, encoded)
-	init := js.Global().Get("Object").New()
-	init.Set("detail", encoded)
-	event := js.Global().Get("CustomEvent").New("gothic:context:"+keyName, init)
-	js.Global().Get("document").Call("dispatchEvent", event)
+	dispatchDirect(keyName, "gothic:context:", []byte(encoded))
 }
 
 // ListenCtxEvent registers a cross-module listener for context updates.
 func ListenCtxEvent(keyName string, fn func(string)) {
+	fullKey := "gothic:context:" + keyName
 	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) > 0 {
-			detail := args[0].Get("detail")
-			if !detail.IsUndefined() && !detail.IsNull() {
-				fn(detail.String())
-			}
+		data := js.Global().Get("__gothic_ctx").Call("get", js.ValueOf(fullKey))
+		if data.IsNull() || data.IsUndefined() {
+			return nil
 		}
+		n := data.Get("byteLength").Int()
+		if n == 0 {
+			return nil
+		}
+		dst := make([]byte, n)
+		js.CopyBytesToGo(dst, data)
+		fn(string(dst))
 		return nil
 	})
 	keep = append(keep, listener)
-	js.Global().Get("document").Call("addEventListener", "gothic:context:"+keyName, listener)
+	js.Global().Get("document").Call("addEventListener", fullKey, listener)
 }
 
 // RequestCtxSet dispatches a set-request to the context manager WASM for this key.
 // The manager is the sole writer: it applies the update and broadcasts back.
 func RequestCtxSet(keyName, encoded string) {
-	init := js.Global().Get("Object").New()
-	init.Set("detail", encoded)
-	event := js.Global().Get("CustomEvent").New("gothic:ctx-req:"+keyName, init)
-	js.Global().Get("document").Call("dispatchEvent", event)
+	dispatchDirect(keyName, "gothic:ctx-req:", []byte(encoded))
 }
 
 // ListenCtxSetReq registers a handler for incoming set-requests on a context manager WASM.
 func ListenCtxSetReq(keyName string, fn func(string)) {
+	fullKey := "gothic:ctx-req:" + keyName
 	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) > 0 {
-			detail := args[0].Get("detail")
-			if !detail.IsUndefined() && !detail.IsNull() {
-				fn(detail.String())
-			}
+		data := js.Global().Get("__gothic_ctx").Call("get", js.ValueOf(fullKey))
+		if data.IsNull() || data.IsUndefined() {
+			return nil
 		}
+		n := data.Get("byteLength").Int()
+		if n == 0 {
+			return nil
+		}
+		dst := make([]byte, n)
+		js.CopyBytesToGo(dst, data)
+		fn(string(dst))
 		return nil
 	})
 	keep = append(keep, listener)
-	js.Global().Get("document").Call("addEventListener", "gothic:ctx-req:"+keyName, listener)
+	js.Global().Get("document").Call("addEventListener", fullKey, listener)
 }
 
 // PingCtxManager dispatches a ping to the context manager asking for an online ack.
 func PingCtxManager(keyName string) {
-	init := js.Global().Get("Object").New()
-	event := js.Global().Get("CustomEvent").New("gothic:ctx-ping:"+keyName, init)
-	js.Global().Get("document").Call("dispatchEvent", event)
+	js.Global().Get("document").Call(
+		"dispatchEvent",
+		js.Global().Get("CustomEvent").New("gothic:ctx-ping:"+keyName),
+	)
 }
 
 // ListenCtxOnline registers a handler that receives the manager's online ack with current state.
 // Fires once on manager startup and on every ping response.
 func ListenCtxOnline(keyName string, fn func(string)) {
+	fullKey := "gothic:ctx-online:" + keyName
 	listener := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) > 0 {
-			detail := args[0].Get("detail")
-			if !detail.IsUndefined() && !detail.IsNull() {
-				fn(detail.String())
-			}
+		data := js.Global().Get("__gothic_ctx").Call("get", js.ValueOf(fullKey))
+		if data.IsNull() || data.IsUndefined() {
+			return nil
 		}
+		n := data.Get("byteLength").Int()
+		if n == 0 {
+			return nil
+		}
+		dst := make([]byte, n)
+		js.CopyBytesToGo(dst, data)
+		fn(string(dst))
 		return nil
 	})
 	keep = append(keep, listener)
-	js.Global().Get("document").Call("addEventListener", "gothic:ctx-online:"+keyName, listener)
+	js.Global().Get("document").Call("addEventListener", fullKey, listener)
 }
 
 // ListenCtxPing registers a handler for incoming pings on the context manager WASM.
@@ -361,10 +395,7 @@ func ListenCtxPing(keyName string, fn func()) {
 // BroadcastCtxOnline dispatches the online ack to all consumer WASMs for this key.
 func BroadcastCtxOnline(keyName, encoded string) {
 	ensureContextStore().Set(keyName, encoded)
-	init := js.Global().Get("Object").New()
-	init.Set("detail", encoded)
-	event := js.Global().Get("CustomEvent").New("gothic:ctx-online:"+keyName, init)
-	js.Global().Get("document").Call("dispatchEvent", event)
+	dispatchDirect(keyName, "gothic:ctx-online:", []byte(encoded))
 }
 
 // PingUntilOnline retries PingCtxManager every 50 ms until isOnline returns true.

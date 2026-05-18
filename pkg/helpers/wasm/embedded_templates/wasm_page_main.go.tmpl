@@ -51,7 +51,7 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 		_encode_{{$fn.StructName}}({{$fn.StructName}}{
 {{range .Fields}}			{{.Name}}: ctx.{{.Name}}.Peek(),
 {{end}}		}, e)
-		encoded := HexEncode(e.Buf)
+		encoded := string(e.Buf)
 		if ctx._online {
 			RequestCtxSet("{{$fn.KeyName}}", encoded)
 		} else {
@@ -60,12 +60,12 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 	}
 {{range .Fields}}	ctx.{{.Name}}.SetBroadcast(broadcast)
 {{end}}	if _stored, _ok := ReadCtxStore("{{$fn.KeyName}}"); _ok {
-		_init := _decode_{{$fn.StructName}}(&Decoder{Buf: HexDecode(_stored)})
+		_init := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(_stored)})
 {{range .Fields}}		ctx.{{.Name}}.ApplyExternal(_init.{{.Name}})
 {{end}}		ctx._online = true
 	}
 	ListenCtxOnline("{{$fn.KeyName}}", func(detail string) {
-		decoded := _decode_{{$fn.StructName}}(&Decoder{Buf: HexDecode(detail)})
+		decoded := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(detail)})
 {{range .Fields}}		ctx.{{.Name}}.ApplyExternal(decoded.{{.Name}})
 {{end}}		if !ctx._online {
 			ctx._online = true
@@ -76,7 +76,7 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 		}
 	})
 	ListenCtxEvent("{{$fn.KeyName}}", func(detail string) {
-		decoded := _decode_{{$fn.StructName}}(&Decoder{Buf: HexDecode(detail)})
+		decoded := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(detail)})
 {{range .Fields}}		ctx.{{.Name}}.ApplyExternal(decoded.{{.Name}})
 {{end}}	})
 	PingUntilOnline("{{$fn.KeyName}}", func() bool { return ctx._online })
@@ -86,7 +86,7 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 func (c *{{.TypeName}}) Set(v {{.StructName}}) {
 	e := NewEncoder(64)
 	_encode_{{.StructName}}(v, e)
-	encoded := HexEncode(e.Buf)
+	encoded := string(e.Buf)
 	if c._online {
 		RequestCtxSet("{{.KeyName}}", encoded)
 	} else {

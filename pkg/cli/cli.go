@@ -8,9 +8,10 @@ import (
 	"os/exec"
 	"runtime"
 
-	helpers "github.com/felipegenef/gothicframework/pkg/helpers"
-	proxy "github.com/felipegenef/gothicframework/pkg/helpers/proxy"
-	routes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+	helpers     "github.com/felipegenef/gothicframework/pkg/helpers"
+	proxy       "github.com/felipegenef/gothicframework/pkg/helpers/proxy"
+	routes      "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+	wasmhelper  "github.com/felipegenef/gothicframework/pkg/helpers/wasm"
 )
 
 type GothicCli struct {
@@ -26,7 +27,7 @@ type GothicCli struct {
 	AWS             helpers.AwsHelper
 	FileBasedRouter routes.FileBasedRouteHelper
 	Proxy           proxy.ProxyHelper
-	Wasm            helpers.WasmHelper
+	Wasm            wasmhelper.WasmHelper
 }
 
 type CliCommands struct {
@@ -51,7 +52,7 @@ func NewCli() GothicCli {
 		Logger:          helpers.NewLogger("error", false, os.Stdout),
 		FileBasedRouter: routes.NewFileBasedRouteHelper(),
 		Proxy:           proxy.NewProxyHelper(),
-		Wasm:            helpers.NewWasmHelper(runtime.GOOS, runtime.GOARCH),
+		Wasm:            wasmhelper.NewWasmHelper(runtime.GOOS, runtime.GOARCH),
 	}
 
 	return cli
