@@ -128,7 +128,8 @@ func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMe
             fetch('/public/wasm/'+wn+'%s'),go.importObject
         );
         window.__gothicCurrentModule=id;
-        window.__gothicInst=r.instance;
+        window.__gothic_set=window.__gothic_set||{};
+        window.__gothic_set[id]=function(k,p,n){window.__gothic_ctx.set(k,p,n,r.instance);};
         go.run(r.instance);
     })();
 })();

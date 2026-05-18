@@ -96,6 +96,9 @@ func TestInjectWasmBootstrap_FullPage_Gzip(t *testing.T) {
 	if !bytes.Contains(out, []byte(`'/public/wasm/'+wn+'.wasm.gz'`)) {
 		t.Errorf("expected gzip extension in the WASM fetch URL: %s", out)
 	}
+	if !bytes.Contains(out, []byte(`window.__gothic_set`)) {
+		t.Errorf("expected __gothic_set registration in bootstrap so dispatchDirect works: %s", out)
+	}
 }
 
 func TestInjectWasmBootstrap_FullPage_Brotli(t *testing.T) {
