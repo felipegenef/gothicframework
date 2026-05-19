@@ -85,6 +85,7 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 		"build", "-no-debug", "-opt=z",
 		"-o", absOutFile,
 		"-target", "wasm",
+		"-gc", "conservative",
 		pkg,
 	)
 	cmd.Dir = tempModDir
@@ -237,12 +238,21 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 	if err != nil {
 		return fmt.Errorf("wasm: context codec: %w", err)
 	}
+	structNames := make(map[string]bool, len(allStructs))
+	for _, st := range allStructs {
+		structNames[st.Name] = true
+	}
+	fields, err := h.buildManagerFieldData(s, structNames, aliases)
+	if err != nil {
+		return fmt.Errorf("wasm: manager fields: %w", err)
+	}
 	if err := h.Template.UpdateFromTemplate(tmplCtxManagerMain, mainPath, WasmCtxManagerMainData{
 		StructName:  s.Name,
 		KeyName:     s.KeyName,
 		HasTime:     h.hasTimeFields(allStructs),
 		Codecs:      codecs,
 		CtxSnippets: snippets,
+		Fields:      fields,
 	}); err != nil {
 		return fmt.Errorf("wasm: render context manager main.go: %w", err)
 	}
@@ -258,7 +268,7 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 	}
 
 	pkg := "./" + filepath.Base(genDir) + "/"
-	cmd := exec.Command(tinygo, "build", "-no-debug", "-opt=z", "-o", absOutFile, "-target", "wasm", pkg)
+	cmd := exec.Command(tinygo, "build", "-no-debug", "-opt=z", "-o", absOutFile, "-target", "wasm", "-gc", "conservative", pkg)
 	cmd.Dir = tempModDir
 	cmd.Env = append(os.Environ(), h.Environ()...)
 	cmd.Stdout = os.Stdout
@@ -296,6 +306,10 @@ func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, ctxSni
 	codecs, err := h.buildCodecData(ctxStructs, aliases)
 	if err != nil {
 		return fmt.Errorf("wasm: codec: %w", err)
+	}
+	wasmFuncs, err := h.buildWasmCtxFuncData(ctxStructs, aliases)
+	if err != nil {
+		return fmt.Errorf("wasm: ctx func data: %w", err)
 	}
 	// Inject "time" import when any context struct uses time.Time and the page
 	// hasn't already imported it from its own source file.
@@ -337,7 +351,7 @@ func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, ctxSni
 		Codecs:      codecs,
 		KeyVars:     h.buildKeyVarData(ctxStructs),
 		CtxTypes:    h.buildCtxTypeData(ctxStructs),
-		WasmFuncs:   h.buildWasmCtxFuncData(ctxStructs),
+		WasmFuncs:   wasmFuncs,
 		CtxSnippets: ctxSnippets,
 		Body:        indented.String(),
 	})

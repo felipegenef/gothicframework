@@ -7,3 +7,8 @@ var pendingSubscriptions []*Subscription
 
 func addPendingSubscription(_ *Subscription) {}
 
+// BeginBatch is a no-op in non-WASM builds.
+func BeginBatch() {}
+
+// EndBatch is a no-op in non-WASM builds.
+func EndBatch() {}

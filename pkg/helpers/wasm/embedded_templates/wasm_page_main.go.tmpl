@@ -45,20 +45,23 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 {{range .WasmFuncs}}{{$fn := .}}func {{.CtorName}}(initial ...{{.StructName}}) *{{.TypeName}} {
 	ctx := &{{.TypeName}}{
 {{range .Fields}}		{{.Name}}: NewObservableField({{$fn.StructName}}{}.{{.Name}}),
-{{end}}	}
-	broadcast := func() {
-		e := NewEncoder(64)
-		_encode_{{$fn.StructName}}({{$fn.StructName}}{
-{{range .Fields}}			{{.Name}}: ctx.{{.Name}}.Peek(),
-{{end}}		}, e)
-		encoded := string(e.Buf)
-		if ctx._online {
-			RequestCtxSet("{{$fn.KeyName}}", encoded)
-		} else {
-			ctx._pending = encoded
-		}
+{{end}}		_pending: "",
 	}
-{{range .Fields}}	ctx.{{.Name}}.SetBroadcast(broadcast)
+{{range .FieldCodecs}}	ctx.{{.FieldName}}.SetBroadcast(func() {
+		if !ctx._online {
+			return
+		}
+		v := {{$fn.StructName}}{ {{.FieldName}}: ctx.{{.FieldName}}.Peek() }
+		e := NewEncoder(8)
+		{{.EncLines}}
+		RequestCtxSetField("{{$fn.KeyName}}", "{{.FieldName}}", string(e.Buf))
+	})
+{{end}}{{range .FieldCodecs}}	ListenCtxEventField("{{$fn.KeyName}}", "{{.FieldName}}", func(detail string) {
+		d := &Decoder{Buf: []byte(detail)}
+		var v {{$fn.StructName}}
+		{{.DecLines}}
+		ctx.{{.FieldName}}.ApplyExternal(v.{{.FieldName}})
+	})
 {{end}}	if _stored, _ok := ReadCtxStore("{{$fn.KeyName}}"); _ok {
 		_init := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(_stored)})
 {{range .Fields}}		ctx.{{.Name}}.ApplyExternal(_init.{{.Name}})
@@ -66,8 +69,10 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 	}
 	ListenCtxOnline("{{$fn.KeyName}}", func(detail string) {
 		decoded := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(detail)})
+		BeginBatch()
 {{range .Fields}}		ctx.{{.Name}}.ApplyExternal(decoded.{{.Name}})
-{{end}}		if !ctx._online {
+{{end}}		EndBatch()
+		if !ctx._online {
 			ctx._online = true
 			if ctx._pending != "" {
 				RequestCtxSet("{{$fn.KeyName}}", ctx._pending)
@@ -75,22 +80,18 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 			}
 		}
 	})
-	ListenCtxEvent("{{$fn.KeyName}}", func(detail string) {
-		decoded := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(detail)})
-{{range .Fields}}		ctx.{{.Name}}.ApplyExternal(decoded.{{.Name}})
-{{end}}	})
 	PingUntilOnline("{{$fn.KeyName}}", func() bool { return ctx._online })
 	return ctx
 }
 
 func (c *{{.TypeName}}) Set(v {{.StructName}}) {
 	e := NewEncoder(64)
-	_encode_{{.StructName}}(v, e)
-	encoded := string(e.Buf)
+	_encode_{{$fn.StructName}}(v, e)
+	enc := string(e.Buf)
 	if c._online {
-		RequestCtxSet("{{.KeyName}}", encoded)
+		RequestCtxSet("{{$fn.KeyName}}", enc)
 	} else {
-		c._pending = encoded
+		c._pending = enc
 	}
 }
 

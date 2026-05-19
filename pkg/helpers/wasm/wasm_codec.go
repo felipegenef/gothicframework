@@ -173,6 +173,101 @@ func (h *WasmHelper) codecLines(fi fieldInfo, structNames map[string]bool, alias
 	)
 }
 
+// captureLines emits the body of a _capture<FieldName>(d *Decoder) []byte helper.
+// The body advances the decoder past this field's bytes (without writing to any
+// receiver struct) and returns a copy of the consumed byte range. This is used by
+// the WASM32 heap-pressure fix: instead of decoding into a Go struct, we keep the
+// raw wire bytes and re-decode lazily on demand.
+//
+// Implementation strategy: call codecLines to get the decode line(s), then
+// mechanically strip writes to the (non-existent) `v.<FieldName>` receiver so
+// that only side effects on `d` remain.
+func (h *WasmHelper) captureLines(fi fieldInfo, structNames map[string]bool, aliases map[string]string) (captureBody string, err error) {
+	_, dec, err := h.codecLines(fi, structNames, aliases)
+	if err != nil {
+		return "", err
+	}
+	if dec == "" {
+		// gothic:"skip" — nothing to advance past.
+		return "start := d.Pos\nreturn d.Buf[start:d.Pos]", nil
+	}
+
+	stripped := stripReceiverWrites(dec, fi.Name)
+	// Return a zero-copy subslice of d.Buf — the caller is responsible for
+	// keeping d.Buf alive for the lifetime of the returned slice. This avoids
+	// per-click allocations proportional to the size of large fields (e.g.
+	// big []Item or []byte image blobs) on TinyGo, which otherwise overwhelm
+	// the GC and cause `unreachable` traps from heap exhaustion.
+	return fmt.Sprintf("start := d.Pos\n%s\nreturn d.Buf[start:d.Pos]", stripped), nil
+}
+
+// stripReceiverWrites rewrites a generated decode snippet so it no longer
+// references `v.<fieldName>` (the receiver struct). The transformations:
+//
+//  1. `v.<F> = make(T, _n);` → ``  (drop the allocation entirely; we only advance d)
+//  2. `for _i := range v.<F>` → `for _i := 0; _i < _n; _i++`
+//  3. `v.<F>[_i] = <expr>` → `_ = <expr>`
+//  4. `v.<F>[_k] = <expr>` → `_ = <expr>`
+//  5. `v.<F> = <expr>` → `_ = <expr>`  (catch-all, runs last)
+func stripReceiverWrites(dec, fieldName string) string {
+	prefix := "v." + fieldName
+	out := dec
+
+	// 1. Drop slice/map allocation: `v.F = make(...);` — we don't need it.
+	out = dropMakeAssignments(out, prefix)
+
+	// 2. Range-over-slice: `for _i := range v.F` → `for _i := 0; _i < _n; _i++`
+	out = strings.ReplaceAll(out, "for _i := range "+prefix, "for _i := 0; _i < _n; _i++")
+
+	// 3/4. Indexed writes: `v.F[_i] = ` and `v.F[_k] = ` → `_ = `
+	out = strings.ReplaceAll(out, prefix+"[_i] = ", "_ = ")
+	// For maps, the decoded key `_k` is no longer read after we drop the
+	// receiver write — add an explicit discard so TinyGo doesn't error on
+	// "declared and not used". We replace the map write with `_ = _k; _ = `
+	// so the existing `_v` discard still consumes the value expression.
+	out = strings.ReplaceAll(out, prefix+"[_k] = ", "_ = _k; _ = ")
+
+	// 5. Catch-all top-level assignment: `v.F = ` → `_ = `
+	out = strings.ReplaceAll(out, prefix+" = ", "_ = ")
+
+	return out
+}
+
+// dropMakeAssignments removes `<prefix> = make(...);` statements from src.
+// It tracks parenthesis depth so nested commas inside make's args don't confuse it.
+func dropMakeAssignments(src, prefix string) string {
+	needle := prefix + " = make("
+	for {
+		idx := strings.Index(src, needle)
+		if idx < 0 {
+			return src
+		}
+		// Find matching close paren for the make(.
+		depth := 1
+		i := idx + len(needle)
+		for i < len(src) && depth > 0 {
+			switch src[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			i++
+		}
+		// Consume trailing `;` and surrounding whitespace.
+		end := i
+		for end < len(src) && (src[end] == ';' || src[end] == ' ' || src[end] == '\t') {
+			end++
+		}
+		// Also trim a single leading space before the prefix to avoid double spaces.
+		start := idx
+		if start > 0 && src[start-1] == ' ' {
+			start--
+		}
+		src = src[:start] + src[end:]
+	}
+}
+
 func (h *WasmHelper) sliceCodecLines(fieldName, elem string, structNames map[string]bool, aliases map[string]string) (enc, dec string, err error) {
 	// [][]T — nested slice
 	if strings.HasPrefix(elem, "[]") {
@@ -427,7 +522,53 @@ func (h *WasmHelper) buildCtxTypeData(structs []structInfo) []CtxTypeData {
 	return result
 }
 
-func (h *WasmHelper) buildWasmCtxFuncData(structs []structInfo) []WasmCtxFuncData {
+// buildManagerFieldData produces one ManagerFieldData per field of the named
+// context struct, in declaration order.
+func (h *WasmHelper) buildManagerFieldData(s structInfo, structNames map[string]bool, aliases map[string]string) ([]ManagerFieldData, error) {
+	out := make([]ManagerFieldData, 0, len(s.Fields))
+	for _, f := range s.Fields {
+		enc, dec, err := h.codecLines(f, structNames, aliases)
+		if err != nil {
+			return nil, fmt.Errorf("manager field %s: %w", f.Name, err)
+		}
+		capture, err := h.captureLines(f, structNames, aliases)
+		if err != nil {
+			return nil, fmt.Errorf("capture %s: %w", f.Name, err)
+		}
+		out = append(out, ManagerFieldData{
+			FieldName:   f.Name,
+			EncodeLines: enc,
+			DecodeLines: dec,
+			CaptureBody: capture,
+		})
+	}
+	return out, nil
+}
+
+// buildPerFieldCodecs produces one PerFieldCodec per field of the named context
+// struct, in declaration order. Used by the consumer (page) template.
+func (h *WasmHelper) buildPerFieldCodecs(s structInfo, structNames map[string]bool, aliases map[string]string) ([]PerFieldCodec, error) {
+	out := make([]PerFieldCodec, 0, len(s.Fields))
+	for _, f := range s.Fields {
+		enc, dec, err := h.codecLines(f, structNames, aliases)
+		if err != nil {
+			return nil, fmt.Errorf("per-field codec %s: %w", f.Name, err)
+		}
+		out = append(out, PerFieldCodec{
+			FieldName: f.Name,
+			FieldType: f.Type,
+			EncLines:  enc,
+			DecLines:  dec,
+		})
+	}
+	return out, nil
+}
+
+func (h *WasmHelper) buildWasmCtxFuncData(structs []structInfo, aliases map[string]string) ([]WasmCtxFuncData, error) {
+	structNames := make(map[string]bool, len(structs))
+	for _, s := range structs {
+		structNames[s.Name] = true
+	}
 	var result []WasmCtxFuncData
 	for _, s := range structs {
 		if s.KeyName == "" {
@@ -442,9 +583,14 @@ func (h *WasmHelper) buildWasmCtxFuncData(structs []structInfo) []WasmCtxFuncDat
 		for _, f := range s.Fields {
 			fd.Fields = append(fd.Fields, CtxFieldData{Name: f.Name, Type: f.Type})
 		}
+		codecs, err := h.buildPerFieldCodecs(s, structNames, aliases)
+		if err != nil {
+			return nil, fmt.Errorf("struct %s: %w", s.Name, err)
+		}
+		fd.FieldCodecs = codecs
 		result = append(result, fd)
 	}
-	return result
+	return result, nil
 }
 
 func (h *WasmHelper) buildServerCtxFuncData(structs []structInfo) []ServerCtxFuncData {

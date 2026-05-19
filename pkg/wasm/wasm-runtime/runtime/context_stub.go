@@ -204,6 +204,11 @@ func PingUntilOnline(keyName string, isOnline func() bool) {}
 func BroadcastCtxEncoded(keyName, encoded string)          {}
 func ListenCtxEvent(keyName string, fn func(string))       {}
 
+func BroadcastCtxEncodedField(keyName, fieldName, encoded string)             {}
+func RequestCtxSetField(keyName, fieldName, encoded string)                   {}
+func ListenCtxEventField(keyName, fieldName string, fn func(string))          {}
+func ListenCtxSetReqField(keyName, fieldName string, fn func(string))         {}
+
 // ContextField stub — no-op broadcast and tracking for server-side compilation.
 type ObservableField[T any] struct{ sig *Observable[T] }
 

@@ -233,6 +233,10 @@ func TestContextDispatchAPISurface(t *testing.T) {
 		_ func(keyName string, fn func())          = ListenCtxPing
 		_ func(keyName string)                     = PingCtxManager
 		_ func(keyName string, isOnline func() bool) = PingUntilOnline
+		_ func(keyName, fieldName, encoded string)   = BroadcastCtxEncodedField
+		_ func(keyName, fieldName, encoded string)   = RequestCtxSetField
+		_ func(keyName, fieldName string, fn func(string)) = ListenCtxEventField
+		_ func(keyName, fieldName string, fn func(string)) = ListenCtxSetReqField
 	)
 
 	// Stub no-op contract: each function must be safe to invoke under the
@@ -253,6 +257,10 @@ func TestContextDispatchAPISurface(t *testing.T) {
 	ListenCtxPing("k", func() {})
 	PingCtxManager("k")
 	PingUntilOnline("k", func() bool { return true })
+	BroadcastCtxEncodedField("k", "F", "v")
+	RequestCtxSetField("k", "F", "v")
+	ListenCtxEventField("k", "F", func(string) {})
+	ListenCtxSetReqField("k", "F", func(string) {})
 }
 
 func TestPayloadBufStubSignatures(t *testing.T) {

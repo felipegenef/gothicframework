@@ -35,13 +35,23 @@ type CtxTypeData struct {
 	Fields   []CtxFieldData
 }
 
+// PerFieldCodec carries per-field codec lines for the consumer (page) template.
+// Distinct from FieldCodec (which models a single line in a whole-struct codec).
+type PerFieldCodec struct {
+	FieldName string // Go field name
+	FieldType string // Go field type as written in source (e.g. "int", "[]Item")
+	EncLines  string // encoder lines (references v.<FieldName>)
+	DecLines  string // decoder lines (references v.<FieldName>)
+}
+
 // WasmCtxFuncData holds data for one WASM-side context constructor + Set method.
 type WasmCtxFuncData struct {
-	CtorName   string
-	TypeName   string
-	StructName string
-	KeyName    string
-	Fields     []CtxFieldData
+	CtorName    string
+	TypeName    string
+	StructName  string
+	KeyName     string
+	Fields      []CtxFieldData
+	FieldCodecs []PerFieldCodec // one entry per source struct field, in declaration order
 }
 
 // ServerCtxFuncData holds data for one server-side context stub.
@@ -84,6 +94,15 @@ type WasmPageMainData struct {
 	Body        string
 }
 
+// ManagerFieldData carries per-field information for the manager template.
+// One entry per source-struct field, in declaration order.
+type ManagerFieldData struct {
+	FieldName   string // Go field name, e.g. "Pings"
+	EncodeLines string // body of inline encode snippet referencing v.<FieldName>
+	DecodeLines string // body of inline decode snippet referencing v.<FieldName>
+	CaptureBody string // body of _capture<FieldName>(d *Decoder) []byte (from Phase 1)
+}
+
 // WasmCtxManagerMainData drives wasm_ctx_manager_main.go.tmpl.
 type WasmCtxManagerMainData struct {
 	StructName  string
@@ -91,6 +110,7 @@ type WasmCtxManagerMainData struct {
 	HasTime     bool // true when any struct field has type time.Time
 	Codecs      []StructCodecData
 	CtxSnippets []string
+	Fields      []ManagerFieldData // one entry per source struct field, in declaration order
 }
 
 // structInfo / fieldInfo are the parsed representation of src/context/*.go.

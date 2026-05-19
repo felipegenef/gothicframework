@@ -352,6 +352,60 @@ func ListenCtxSetReq(keyName string, fn func(string)) {
 	js.Global().Get("document").Call("addEventListener", fullKey, listener)
 }
 
+// BroadcastCtxEncodedField broadcasts an already-encoded single field value.
+// Event name: "gothic:context:<keyName>:<fieldName>"
+func BroadcastCtxEncodedField(keyName, fieldName, encoded string) {
+	dispatchDirect(keyName+":"+fieldName, "gothic:context:", []byte(encoded))
+}
+
+// RequestCtxSetField sends a per-field set-request to the manager.
+// Event name: "gothic:ctx-req:<keyName>:<fieldName>"
+func RequestCtxSetField(keyName, fieldName, encoded string) {
+	dispatchDirect(keyName+":"+fieldName, "gothic:ctx-req:", []byte(encoded))
+}
+
+// ListenCtxEventField subscribes to per-field broadcasts from the manager.
+func ListenCtxEventField(keyName, fieldName string, fn func(string)) {
+	fullKey := "gothic:context:" + keyName + ":" + fieldName
+	listener := js.FuncOf(func(_ js.Value, _ []js.Value) interface{} {
+		data := js.Global().Get("__gothic_ctx").Call("get", js.ValueOf(fullKey))
+		if data.IsNull() || data.IsUndefined() {
+			return nil
+		}
+		n := data.Get("byteLength").Int()
+		if n == 0 {
+			return nil
+		}
+		dst := make([]byte, n)
+		js.CopyBytesToGo(dst, data)
+		fn(string(dst))
+		return nil
+	})
+	keep = append(keep, listener)
+	js.Global().Get("document").Call("addEventListener", fullKey, listener)
+}
+
+// ListenCtxSetReqField subscribes to per-field set-requests (used by the manager).
+func ListenCtxSetReqField(keyName, fieldName string, fn func(string)) {
+	fullKey := "gothic:ctx-req:" + keyName + ":" + fieldName
+	listener := js.FuncOf(func(_ js.Value, _ []js.Value) interface{} {
+		data := js.Global().Get("__gothic_ctx").Call("get", js.ValueOf(fullKey))
+		if data.IsNull() || data.IsUndefined() {
+			return nil
+		}
+		n := data.Get("byteLength").Int()
+		if n == 0 {
+			return nil
+		}
+		dst := make([]byte, n)
+		js.CopyBytesToGo(dst, data)
+		fn(string(dst))
+		return nil
+	})
+	keep = append(keep, listener)
+	js.Global().Get("document").Call("addEventListener", fullKey, listener)
+}
+
 // pingEvents caches one CustomEvent JS object per keyName so we don't allocate
 // a new JS value (and a permanent TinyGo bridge slot) on every ping.
 var pingEvents = map[string]js.Value{}
