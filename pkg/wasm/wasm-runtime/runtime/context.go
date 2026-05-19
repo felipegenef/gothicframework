@@ -458,6 +458,14 @@ func BroadcastCtxOnline(keyName, encoded string) {
 	dispatchDirect(keyName, "gothic:ctx-online:", []byte(encoded))
 }
 
+// UpdateCtxOnlineStore updates the JS-side context store so that late-joining
+// consumers see fresh data via ReadCtxStore, WITHOUT dispatching the
+// gothic:ctx-online event. Use this from ListenCtxSetReq to fix the startup
+// race (T5) without triggering ListenCtxOnline scans in already-running consumers.
+func UpdateCtxOnlineStore(keyName string, encoded []byte) {
+	ensureContextStore().Set(keyName, string(encoded))
+}
+
 // PingUntilOnline retries PingCtxManager every 50 ms until isOnline returns true.
 // Runs in its own goroutine so it doesn't block the caller.
 func PingUntilOnline(keyName string, isOnline func() bool) {

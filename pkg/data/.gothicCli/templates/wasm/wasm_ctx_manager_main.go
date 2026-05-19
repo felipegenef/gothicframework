@@ -90,15 +90,38 @@ func _captureAllFields(detail []byte) {
 {{range .Fields}}	_fields["{{.FieldName}}"] = _capture{{.FieldName}}(d)
 {{end}}}
 
+func _bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) { return false }
+	for i := range a { if a[i] != b[i] { return false } }
+	return true
+}
+
 func _registerListeners() {
 	ListenCtxSetReq("{{.KeyName}}", func(detail string) {
-		// Single copy of the incoming payload — _fields[] slices point into it,
-		// and the same buffer is broadcast back as the online ack (no re-encode).
-		b := []byte(detail)
-		_lastWholeEncoded = b
-		_captureAllFields(b)
-		_wholeDirty = false
-		BroadcastCtxOnline("{{.KeyName}}", string(b))
+		// Use capture helpers to walk the payload field-by-field (zero
+		// allocations for unchanged fields — avoids _decode_{{.StructName}}
+		// which allocates O(N) for large slices on every click).
+		incoming := []byte(detail)
+		d := &Decoder{Buf: incoming}
+{{range .Fields}}		{
+			nb := _capture{{.FieldName}}(d)
+			if !_bytesEqual(nb, _fields["{{.FieldName}}"]) {
+				cp := append([]byte(nil), nb...)
+				_fields["{{.FieldName}}"] = cp
+				BroadcastCtxEncodedField("{{$.KeyName}}", "{{.FieldName}}", string(cp))
+				_wholeDirty = true
+			}
+		}
+{{end}}		// Update the JS store so late-joining consumers see fresh data via
+		// ReadCtxStore — but do NOT dispatch gothic:ctx-online here. Dispatching
+		// on every click would trigger ListenCtxOnline in all consumer WASMs,
+		// which allocates the full struct bytes (potentially hundreds of KB for
+		// large slices) on every click. Consumers get per-field events instead;
+		// the full online ack is sent on pings only.
+		if _wholeDirty {
+			_ensureWholeFresh()
+			UpdateCtxOnlineStore("{{.KeyName}}", _lastWholeEncoded)
+		}
 	})
 {{range .Fields}}	ListenCtxSetReqField("{{$.KeyName}}", "{{.FieldName}}", func(detail string) {
 		b := []byte(detail)

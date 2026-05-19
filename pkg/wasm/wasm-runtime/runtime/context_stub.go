@@ -200,6 +200,7 @@ func PingCtxManager(keyName string)                        {}
 func ListenCtxOnline(keyName string, fn func(string))      {}
 func ListenCtxPing(keyName string, fn func())              {}
 func BroadcastCtxOnline(keyName, encoded string)           {}
+func UpdateCtxOnlineStore(keyName string, encoded []byte)  {}
 func PingUntilOnline(keyName string, isOnline func() bool) {}
 func BroadcastCtxEncoded(keyName, encoded string)          {}
 func ListenCtxEvent(keyName string, fn func(string))       {}
