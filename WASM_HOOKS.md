@@ -8,11 +8,6 @@ import . "github.com/felipegenef/gothicframework/pkg/wasm"
 
 They compile as no-ops server-side and as the real reactive TinyGo implementation in the WASM binary.
 
-> **API naming update.** This document was rewritten to match the merged API.
-> If you still see references to `UseState` / `UseEffect` / `Register` in older
-> material, replace them with `CreateObservable` / `Observe` / `CreateWasmFunc`
-> respectively.
-
 ---
 
 ## State
@@ -102,7 +97,58 @@ ObserveWithCleanup(func() func() {
 
 ## Event Registration
 
-These functions expose Go callbacks to JavaScript. Gothic routes the call to the correct WASM module when multiple components with the same function name are on the same page (see `WASM_SCOPING.md`).
+These functions expose Go callbacks to JavaScript. When multiple WASM modules are on the same page (e.g. a counter component + a menu component + a multiselect), they could all register a function named `"increment"`. Without isolation, each call to `js.Global().Set("increment", f)` overwrites the previous one — the last module to load wins, silently breaking all others.
+
+Gothic solves this transparently with **per-instance scoping** — no changes to user code required.
+
+### How scoping works
+
+Each WASM component gets a unique scope ID generated at render time (e.g. `counter-a3f9b21c`). The bootstrap script stamps this ID as `data-gothic-scope` on the component's root DOM element and sets `window.__gothicCurrentModule` before calling `go.run()`. The WASM module captures that ID in a package-level `cachedModuleID` on init.
+
+`CreateWasmFunc` / `CreateWasmStringFunc` / `CreateWasmBoolFunc` store the callback in `window.__gothic_registry[instanceID][name]` instead of directly on `window`. A thin proxy is created on `window[name]` once per function name. When a user triggers the event, the proxy reads `window.__gothicFindScope()` (which calls `event.target.closest('[data-gothic-scope]')`) to find which instance owns the event and routes to the correct module's callback.
+
+```
+User clicks a button inside component A
+  │
+  ▼
+window.increment()       ← proxy, created once for this function name
+  │
+  ├── __gothicFindScope()
+  │     event.target.closest('[data-gothic-scope]')
+  │     → "counter-a3f9b21c"
+  │
+  └── __gothic_registry["counter-a3f9b21c"]["increment"]()
+        → module A's callback only ✓
+```
+
+**Full-page components** — the scope is stamped as a `data-gothic-scope` attribute on the `<body>` tag.  
+**Fragment components** — the content is wrapped in `<div style="display:contents">` (invisible to CSS flexbox/grid) so `closest('[data-gothic-scope]')` can find it.
+
+### Known limitation
+
+The proxy relies on `window.event` being set, which is true for all user-triggered interactions (click, input, change, focus, blur). It is `undefined` for programmatic calls from async contexts (`setTimeout`, Promise callbacks). In those cases the proxy falls back to the first registered module that has the function — which is correct when there is only one instance of a component on the page.
+
+### Why stateful components must lazy-load
+
+Every component with a `ClientSideState` function gets its own `.wasm.gz` file and its own bootstrap `<script>` tag. The script sets `window.__gothicCurrentModule` immediately before `go.run()` so the module captures the right namespace.
+
+This only works if **each WASM module starts after its scope element is already in the DOM**. If stateful components are inlined in the initial SSR output, all their `<script>` tags fire in parallel. `window.__gothicCurrentModule` gets overwritten by whichever `fetch` resolves last — every module that loaded after the first one captures the wrong namespace.
+
+The fix: load each stateful component as a separate HTMX request after the page is ready. Use `StatefulComponentOf` to do this type-safely:
+
+```go
+import gothicComponents "github.com/felipegenef/gothicframework/components"
+
+// Type-safe — path comes from the registered config, no magic strings.
+@gothicComponents.StatefulComponentOf(&components.CounterWidgetConfig)
+
+// With a custom loading placeholder:
+@gothicComponents.StatefulComponent(components.CounterWidgetConfig.Path) {
+    <div class="animate-pulse">Loading…</div>
+}
+```
+
+The old manual pattern — `<div hx-get="/components/counterwidget" hx-trigger="load" hx-swap="outerHTML">` — still works but has no compile-time path check and breaks silently on rename.
 
 ### `CreateWasmFunc(name string, fn func())`
 
@@ -268,7 +314,91 @@ Context lets multiple WASM components share reactive state without prop drilling
 | `Peek() T` | Returns the current value without registering a dependency. Safe to call outside `Observe`. |
 | `Set(v T)` | Updates the local value and broadcasts to all other modules on the page. |
 
-Canonical examples in TestGothic: `src/context/PageContext.go`, `src/context/codectestctx.go`.
+
+### Complete context usage example
+
+```
+src/context/app_context.go       ← 1. define the struct
+src/components/counter/          ← 2. writer component
+src/components/sidebar/          ← 3. reader component
+src/pages/home/home.go           ← 4. mount the manager
+```
+
+**Step 1 — define the shared struct** in `src/context/`:
+
+```go
+package context
+
+import . "github.com/felipegenef/gothicframework/pkg/wasm"
+
+type App struct {
+    GothicSharedContext
+    Count int
+    Theme string
+    Label string
+}
+```
+
+Run `gothicframework wasm` — the CLI generates `AppContext()` and a manager WASM binary.
+
+**Step 2 — writer component** (sets state):
+
+```go
+ClientSideState: func() {
+    ctx := AppContext()   // *AppContext
+
+    CreateWasmFunc("increment", func() {
+        // ctx.Set fans out to per-field set-requests via the manager
+        ctx.Set(App{
+            Count: ctx.Count.Peek() + 1,
+            Theme: ctx.Theme.Peek(),
+            Label: ctx.Label.Peek(),
+        })
+    })
+
+    // Or set a single field directly — even more efficient:
+    CreateWasmFunc("toggleTheme", func() {
+        if ctx.Theme.Peek() == "light" {
+            ctx.Theme.Set("dark")   // only the Theme field is broadcast
+        } else {
+            ctx.Theme.Set("light")
+        }
+    })
+},
+```
+
+**Step 3 — reader component** (reacts to state):
+
+```go
+ClientSideState: func() {
+    ctx := AppContext()   // same key → same manager → same state
+
+    Observe(func() {
+        SetText("count-display", strconv.Itoa(ctx.Count.Get()))
+    }, ctx.Count)   // only re-runs when Count changes, not on Theme/Label updates
+
+    Observe(func() {
+        if ctx.Theme.Get() == "dark" {
+            AddClass("body", "dark-mode")
+        } else {
+            RemoveClass("body", "dark-mode")
+        }
+    }, ctx.Theme)
+},
+```
+
+**Step 4 — mount the manager** once in your page template:
+
+```go
+// home.go
+templ Home() {
+    @ContextManagerComponent(App{})   // boots the manager WASM
+    @CounterComponent()
+    @SidebarComponent()
+}
+```
+
+The manager WASM must be on the page before any consumer calls `AppContext()`. `ContextManagerComponent` handles this automatically.
 
 ### Lower-level key factories (advanced)
 
@@ -290,7 +420,7 @@ For one-off primitive shares without defining a struct, the runtime exposes type
 |---------|------|
 | `JsonKey[T any](name)` | `ContextKey[T]` |
 
-`T` must be JSON-serializable. `JsonKey` pulls in `encoding/json`, which adds ~140 KB gzip to any binary that calls it. Binaries using only primitive keys (or the generated `BinaryKey`-based context structs) are unaffected.
+`T` must be JSON-serializable. `encoding/json` is imported unconditionally by the runtime package, so the binary size cost is present for any app that uses the context system regardless of whether you call `JsonKey` directly.
 
 **Binary** — bespoke codec, smallest payload:
 
@@ -303,9 +433,88 @@ For one-off primitive shares without defining a struct, the runtime exposes type
 
 ---
 
-### How it works
+### How it works — full communication flow
 
-Each WASM module runs in its own Go heap — `*Observable[T]` pointers cannot cross module boundaries. The generated context constructor (`<Struct>Context()`) registers a `BinaryKey` for the struct, encodes the payload as raw bytes, writes it into `window.__gothic_payload[keyName].data` (a reused `Uint8Array`), fires a `CustomEvent("gothic:context:keyName")` on `document`, and listens for that event to copy the bytes back via `js.CopyBytesToGo`. From the consumer's perspective each field is an ordinary observable — subscribe to it in `Observe`, read it with `.Get()`.
+Each WASM module runs in its own Go heap — `*Observable[T]` pointers cannot cross module boundaries. The generated context system uses a **manager WASM** as the single source of truth and broadcasts per-field binary updates to consumer WASMs through the JS event bus.
+
+```
+  Consumer WASM A              Manager WASM              Consumer WASM B
+  (e.g. counter.wasm)       (e.g. page-ctx-mgr.wasm)    (e.g. sidebar.wasm)
+  ─────────────────────     ─────────────────────────    ─────────────────────
+  ctx.Theme.Set("dark")
+    │
+    │  encode field → []byte
+    │  RequestCtxSetField(
+    │    "page", "Theme",
+    │    string(bytes))
+    │
+    ▼
+  ── JS event bus ──────────────────────────────────────────────────────────▶
+  gothic:ctx-req:page:Theme
+                            │
+                            │  _fields["Theme"] = bytes
+                            │  BroadcastCtxEncodedField(
+                            │    "page", "Theme",
+                            │    string(bytes))
+                            │
+                            ▼
+  ◀── JS event bus ──────────────────────────────────────────────────────────
+  gothic:context:page:Theme        gothic:context:page:Theme
+    │                                │
+    │  decode bytes → string         │  decode bytes → string
+    │  ctx.Theme.ApplyExternal(v)    │  ctx.Theme.ApplyExternal(v)
+    │  → Observe callbacks fire      │  → Observe callbacks fire
+    ▼                                ▼
+  DOM updated                      DOM updated
+
+
+  ctx.Set(Page{...})   ← whole-struct fan-out path
+    │
+    │  encode struct → []byte
+    │  RequestCtxSet("page", string(bytes))
+    │
+    ▼
+  ── JS event bus ──────────────────────────────────────────────────────────▶
+  gothic:ctx-req:page
+                            │
+                            │  _captureAllFields(bytes)   ← zero-alloc scan
+                            │  for each field:
+                            │    nb = _captureField(d)    ← raw wire bytes
+                            │    if !_bytesEqual(nb,      ← diff check
+                            │         _fields[field]):
+                            │      _fields[field] = copy(nb)
+                            │      BroadcastCtxEncodedField(...)
+                            │      _wholeDirty = true
+                            │  if _wholeDirty:
+                            │    UpdateCtxOnlineStore(...)  ← updates JS map,
+                            │                               no event dispatch
+                            ▼
+  ◀── JS event bus ─────────────────────── (only changed fields broadcast)
+
+
+  New consumer boots
+    │
+    │  ReadCtxStore("page") ← reads window.__gothic_context map
+    │    → returns last whole-struct bytes (kept fresh by
+    │      UpdateCtxOnlineStore on every mutation)
+    │  decode → apply all fields  ← hydrated from store
+    │  ctx._online = true
+    │
+    │  PingUntilOnline(...)  ← if store was empty, ping manager
+    │    → manager responds with _broadcastOnline()
+    │       → gothic:ctx-online:page
+    │         → ListenCtxOnline fires, full hydration
+    ▼
+  online, reactive
+```
+
+**Two JS stores** serve different roles (see the table in the `dispatchDirect` section for full details):
+- `window.__gothic_ctx` — binary buffer manager, keyed by full event name. Feeds event listeners via `CopyBytesToGo`.
+- `window.__gothic_context` — string store keyed by short key name. Fed by `UpdateCtxOnlineStore` / `BroadcastCtxOnline`. Read by `ReadCtxStore` in consumer constructors — no event needed, just a direct map lookup. The manager keeps it fresh on every mutation so late-joining consumers never see stale data.
+
+**`dispatchHold`** is a Go-side `map[string][]byte` that keeps each payload slice alive until the next dispatch on the same key overwrites it — preventing the GC from collecting the buffer while the async microtask is queued but not yet fired.
+
+From the consumer's perspective each field is an ordinary observable — subscribe to it in `Observe`, read it with `.Get()`.
 
 ---
 
@@ -391,27 +600,35 @@ The root cause of both the `copyBytesToJS`/`copyBytesToGo` patch requirement AND
 
 **`pkg/helpers/routes/wasm_bootstrap.go`**
 
-The generated bootstrap script injects `window.__gothic_ctx`, `window.__gothicDispatchAsync`, and `window.__gothicFindScope` under a single `if (!window.__gothic_ctx)` guard. The injection is prepended inside the per-module IIFE alongside `go.argv = [...]` and `go.run(r.instance)`:
+The generated bootstrap script injects `window.__gothic_ctx`, `window.__gothicDispatchAsync`, and `window.__gothicFindScope` under separate guards. Each WASM module also registers a per-instance entry in `window.__gothic_set` that captures `r.instance` in a closure — this is how `dispatchDirect` reaches `__gothic_ctx.set` with the correct instance reference without a global `__gothicInst`.
 
 ```js
+// Shared broadcast buffer manager — created once, shared across all modules.
 if (!window.__gothic_ctx) {
     window.__gothic_ctx = (function() {
-        var _state = {};
-        var _subs  = {};
+        var _state = {};  // keyName → Uint8Array view (current payload)
+        var _subs  = {};  // keyName → [handler fn]
+        var _bufs  = {};  // keyName → ArrayBuffer (capacity-doubling pool)
+        var _views = {};  // keyName → Uint8Array (current view into _bufs[key])
         return {
-            // Called by Go: keyName (string), ptrI32 (raw WASM i32 offset), byteLen (int), inst (WebAssembly.Instance)
+            // Called via __gothic_set[moduleID] with the raw WASM memory offset.
             set: function(keyName, ptrI32, byteLen, inst) {
                 var offset = ptrI32 >>> 0;
-                var existing = _state[keyName];
-                var cap = existing ? existing.byteLength : 0;
-                var needed = byteLen < 128 ? 128 : byteLen * 2;
-                if (!existing || cap < byteLen) {
-                    var buf = new ArrayBuffer(needed);
-                    existing = new Uint8Array(buf);
-                    _state[keyName] = existing;
+                var src = new Uint8Array(inst.exports.memory.buffer, offset, byteLen);
+                var buf = _bufs[keyName];
+                if (!buf || buf.byteLength < byteLen) {
+                    var cap = byteLen < 128 ? 128 : byteLen * 2;
+                    buf = new ArrayBuffer(cap);
+                    _bufs[keyName] = buf;
+                    _views[keyName] = null;
                 }
-                existing.set(new Uint8Array(inst.exports.memory.buffer, offset, byteLen));
-                var view = existing.subarray(0, byteLen);
+                var view = _views[keyName];
+                if (!view || view.byteLength !== byteLen) {
+                    view = new Uint8Array(buf, 0, byteLen);
+                    _views[keyName] = view;
+                }
+                view.set(src);           // copy from WASM linear memory
+                _state[keyName] = view;  // expose for .get()
                 var handlers = _subs[keyName];
                 if (handlers) {
                     handlers.forEach(function(h) {
@@ -425,47 +642,74 @@ if (!window.__gothic_ctx) {
             get: function(keyName) { return _state[keyName] || null; }
         };
     })();
+}
+if (!window.__gothicDispatchAsync) {
     window.__gothicDispatchAsync = function(name) {
-        queueMicrotask(function() {
-            document.dispatchEvent(new CustomEvent(name));
-        });
-    };
-    window.__gothicFindScope = function(el) {
-        while (el) {
-            if (el.dataset && el.dataset.gothicScope) return el.dataset.gothicScope;
-            el = el.parentElement;
-        }
-        return "";
+        queueMicrotask(function() { document.dispatchEvent(new CustomEvent(name)); });
     };
 }
+if (!window.__gothicFindScope) {
+    // Takes no arguments — reads window.event directly, uses .closest() for
+    // a single O(depth) DOM walk instead of a manual while loop.
+    window.__gothicFindScope = function() {
+        var e = window.event;
+        if (!e || !e.target) return '';
+        var el = e.target.closest('[data-gothic-scope]');
+        return el ? (el.dataset.gothicScope || '') : '';
+    };
+}
+
+// Per-instance dispatch shim — captures r.instance in closure so Go's
+// dispatchDirect can call __gothic_ctx.set with the correct instance
+// without a global __gothicInst variable.
+window.__gothic_set = window.__gothic_set || {};
+window.__gothic_set[id] = function(k, p, n) {
+    window.__gothic_ctx.set(k, p, n, r.instance);
+};
+go.run(r.instance);
 ```
 
-The WASM instance is exposed as `window.__gothicInst = r.instance` just before `go.run(r.instance)` so `__gothic_ctx.set` can reference it.
+`_bufs`/`_views` implement a **capacity-doubling persistent buffer pool** per key: the `ArrayBuffer` for a key grows to `max(128, byteLen * 2)` the first time it is written and is reused for all subsequent writes of the same size. The `_values[]` entry for the key is created once at first use and never replaced unless the payload outgrows the current capacity. This is what keeps `_values[]` flat across thousands of broadcasts for stable-payload keys.
 
 ---
 
 **`pkg/wasm/wasm-runtime/runtime/context.go`**
 
-`dispatchDirect` passes a raw WASM memory offset to `__gothic_ctx.set`. Listeners registered via `__gothic_ctx.subscribe` receive the bytes as a `Uint8Array` view and copy them into Go with `js.CopyBytesToGo`, followed by `.String()` to trigger `finalizeRef`:
+`dispatchDirect` stores the buffer in `dispatchHold` keyed by the **full event name** (prefix + key), then calls the per-module `__gothic_set[moduleID()]` shim which forwards to `__gothic_ctx.set` with the correct instance reference. It then queues an async dispatch via `__gothicDispatchAsync`:
 
 ```go
 func dispatchDirect(keyName, eventPrefix string, encoded []byte) {
     buf := make([]byte, len(encoded))
     copy(buf, encoded)
-    dispatchHold[keyName] = buf  // keep alive until microtask fires
+    // Key includes eventPrefix so different event types on the same keyName
+    // don't clobber each other in the hold map.
+    dispatchHold[eventPrefix+keyName] = buf
 
     ptr := int32(uintptr(unsafe.Pointer(unsafe.SliceData(buf))))
-    js.Global().Get("__gothic_ctx").Call("set",
-        js.ValueOf(keyName),
+    // __gothic_set[moduleID()] = func(k,p,n){ __gothic_ctx.set(k,p,n,r.instance) }
+    // The instance reference is captured in the bootstrap closure — no global
+    // __gothicInst variable exists.
+    js.Global().Get("__gothic_set").Get(moduleID()).Invoke(
+        js.ValueOf(eventPrefix+keyName),
         js.ValueOf(ptr),
         js.ValueOf(len(buf)),
-        js.Global().Get("__gothicInst"),
     )
     js.Global().Call("__gothicDispatchAsync", js.ValueOf(eventPrefix+keyName))
 }
 ```
 
-Listeners call `js.CopyBytesToGo(dst, u8)` then `fn(string(dst))`. The `.String()` call on the result triggers `finalizeRef`, keeping `_values[]` entries bounded.
+Event listeners (e.g. `ListenCtxEventField`) call `__gothic_ctx.get(fullKey)` to read the `Uint8Array` view, copy it with `js.CopyBytesToGo(dst, data)`, then call `fn(string(dst))`. The `.String()` call triggers `finalizeRef` on the temporary `js.Value`, keeping `_values[]` bounded.
+
+**Two JS stores — not one:**
+
+| Object | Created by | Keys | Contains | Used by |
+|--------|-----------|------|----------|---------|
+| `window.__gothic_ctx` | bootstrap (JS) | full event name, e.g. `"gothic:ctx-online:page"` | `Uint8Array` view into persistent buffer | `ListenCtxEvent`, `ListenCtxOnline`, `ListenCtxEventField`, etc. |
+| `window.__gothic_context` | `ensureContextStore()` (Go runtime) | short key name, e.g. `"page"` | string-encoded payload | `ReadCtxStore`, `UpdateCtxOnlineStore`, `BroadcastCtxOnline` |
+
+`ReadCtxStore("page")` reads from `window.__gothic_context["page"]` (string).
+`UpdateCtxOnlineStore("page", bytes)` writes `string(bytes)` to `window.__gothic_context["page"]`.
+`ListenCtxOnline` reads from `window.__gothic_ctx["gothic:ctx-online:page"]` (binary `Uint8Array`).
 
 ---
 
@@ -475,35 +719,6 @@ The directory still exists and contains the patched `wasm_exec.js` with `>>>= 0`
 
 The direct-memory transport means the payload bytes themselves no longer pass through these patched bridge functions, so the practical risk of the unsigned-pointer bug is greatly reduced — but the patched `wasm_exec.js` is retained until the upstream fix lands.
 
----
-
-**Verification**
-
-```bash
-# 1. Go build (host + WASM target)
-cd /home/felipe/DEV/gothic-cli
-go build github.com/felipegenef/gothicframework/...
-GOOS=js GOARCH=wasm go build ./pkg/wasm/wasm-runtime/runtime/...
-
-# 2. Go tests
-go test ./pkg/helpers/... ./pkg/helpers/routes/... ./pkg/wasm/... ./pkg/cli/... ./cmd/...
-
-# 3. Rebuild TestGothic WASMs
-go build -o gothicframework .
-cd /home/felipe/DEV/TestGothic
-rm -f .gothicCli/wasm-cache.json
-rm -rf public/wasm
-/home/felipe/DEV/gothic-cli/gothicframework wasm
-
-# 4. Playwright suite
-/home/felipe/DEV/gothic-cli/gothicframework hot-reload &
-npx playwright test
-```
-
-**Expected stress-test outcomes:**
-- `codec-stress-random.spec.ts` — passes (no unreachable after 30 s)
-- `codec-bridge-leak.spec.ts` — passes (`_values[]` stays flat; payload bytes never enter the table)
-- `codec-ctsetdeep-repro.spec.ts` — passes (300 iterations complete without WASM crash)
 
 ---
 
@@ -532,9 +747,6 @@ ClientSideState: func() {
         }
     })
 
-    // NOTE: no trailing `select {}` needed — the WASM page template emits it
-    // for you. If you leave one in, the build helper strips it before
-    // rendering to avoid duplication.
 },
 ```
 
@@ -572,39 +784,42 @@ Each Gothic WASM module runs inside the browser as a 32-bit WebAssembly binary. 
 
 Go's GC reclaims allocations between broadcasts, so the **live set** stays flat. But the underlying WASM linear memory is **never returned to the host** — pages are committed on demand and held forever. Chrome reports this committed memory as process RSS. After enough large broadcasts the high-water mark approaches 4 GB and the Go allocator starts failing, causing a WASM `unreachable` trap.
 
-### The broadcast pipeline
+### The broadcast pipeline (v2.16.0 — per-field)
 
 Every call to `ctx.Set(largeStruct)` triggers this pipeline:
 
 ```
-Go (WASM module)                         JS (browser main thread)
-─────────────────────────────────────    ─────────────────────────────────────
-1. Encode largeStruct → []byte           
+Go (consumer WASM)                       Manager WASM               JS (browser)
+──────────────────────────────────────   ────────────────────────   ─────────────
+1. Encode largeStruct → []byte
    (binary codec, ~12 MB for 10 k items)
-   ↓ ALLOCATES on Go heap
-   
-2. dispatchDirect(key, encoded)
-   ↓ ptrI32 = int32(uintptr(ptr))
-   ↓ passes raw WASM offset to JS ──────▶ 3. __gothic_ctx.set(key, ptrI32,
-                                               byteLen, instance)
-                                              ↓ reads inst.exports.memory
-                                                .buffer[offset:offset+byteLen]
-                                              ↓ copies into persistent Uint8Array
-                                              ↓ notifies subscribers via
-                                                queueMicrotask
-                                              
-4. __gothicDispatchAsync(event) ──────────▶ 5. CustomEvent fires after GC yields
-   (deferred via queueMicrotask)              subscribers call CopyBytesToGo
-                                              each subscriber decodes its own
-                                              copy: ANOTHER ~12 MB allocation
-                                              per subscriber
+   ↓ ALLOCATES on Go heap (manager side)
 
-6. Go GC runs, reclaims encoded + decoded
-   buffers.  Live set drops back to normal.
-   But COMMITTED pages stay.
+2. RequestCtxSet(key, bytes) ──────────▶ 3. _captureAllFields(bytes)
+                                            zero-alloc scan via _skip_*
+                                            diff each field vs _fields[]
+                                            for CHANGED fields only:
+                                              BroadcastCtxEncodedField
+                                              ↓ dispatchDirect (per-field)
+                                              ↓ __gothic_set[id].Invoke ──▶ __gothic_ctx.set
+                                              ↓ __gothicDispatchAsync ────▶ CustomEvent fires
+                                            UpdateCtxOnlineStore
+                                            (updates __gothic_context,
+                                             NO gothic:ctx-online event)
+
+4. Consumer ListenCtxEventField fires      (only for CHANGED fields)
+   dst = CopyBytesToGo(fieldBytes)
+   → decode just that field  ←────── allocation proportional to
+   ApplyExternal(v)                   ONE field, not the full struct
+   Observe callbacks fire
+   DOM updated
 ```
 
-**Every broadcast round-trip allocates approximately `payloadSize × (1 + numSubscribers)`** bytes on the Go heap. With a 12 MB payload and 3 subscribers that is ~48 MB per click. Go's GC reclaims all of it, but the WASM committed-memory high-water mark climbs by ~48 MB and never comes back down.
+**Per click: allocates approximately `changedFieldSize × numSubscribers`** — not `fullStructSize × numSubscribers`. For a click that bumps a counter (`int` = 4 bytes), the consumer allocates ~4 bytes, not 12 MB, even when a 10k-item list is part of the same struct.
+
+**Full-struct allocation still happens:**
+- In the manager WASM on the initial `_captureAllFields` scan (zero-alloc pointer walk — no Go objects)
+- In every consumer on **ping responses** only (`ListenCtxOnline` fires, `incoming := []byte(detail)` = full struct bytes). Pings are rare — once on boot and whenever a new consumer mounts.
 
 ### Why pages are never returned
 
@@ -649,139 +864,19 @@ The `_values[]` fixes (Problem 2 above) address a different layer: they eliminat
 
 A common first instinct is "just use WASM64 — bigger address space, problem gone." That is wrong. WASM64 raises the ceiling from 4 GB to 16 exabytes, but the memory still grows monotonically on every large broadcast. On a machine with 8 GB of RAM you would still OOM the user's OS — you would just hit the machine wall instead of the WASM wall. The failure mode is identical; only the threshold changes. WASM64 is a delay, not a fix.
 
-### Solution analysis
+### How Gothic mitigates this today
 
-None of these is trivially cheap. They are ordered from most to least impactful.
+Two mitigations are implemented:
 
----
+**Per-field subscriptions** — instead of broadcasting the full struct on every mutation, each field gets its own event key (`gothic:context:<key>:<field>`). A module observing only `Theme` allocates only Theme's wire bytes per click. The full struct only crosses the bridge on ping responses (boot hydration), not per click.
 
-#### Solution 1 — Module instance recycling *(the real fix)*
-
-When a `WebAssembly.Instance` is garbage-collected by the browser, **all of its linear memory is returned immediately** — 100 % of the committed pages, regardless of how many `memory.grow` calls were made. This is the only mechanism that can actually reclaim WASM linear memory.
-
-Gothic already has the key structural property that makes this feasible: **context state lives in `window.__gothic_ctx` on the JS side, not inside Go.** Go modules are consumers of that state, not owners. A fresh instance re-hydrates by re-subscribing on startup.
-
-The recycling protocol would look like this:
-
-```
-Trigger: broadcast count threshold OR estimated heap pressure
-         (e.g. every N large broadcasts, or when performance.memory.usedJSHeapSize
-          crosses a heuristic limit)
-
-┌─────────────────────────────────────────────────────────┐
-│  JS orchestrator (outside WASM)                         │
-│                                                         │
-│  1. Snapshot: read window.__gothic_ctx._state           │
-│     → plain JS object, already serialised bytes         │
-│                                                         │
-│  2. Destroy old instance                                │
-│     → let it fall out of scope / null the reference     │
-│     → browser GC reclaims ALL linear memory             │
-│                                                         │
-│  3. Re-instantiate fresh WebAssembly.Instance           │
-│     → same .wasm binary, new address space              │
-│                                                         │
-│  4. Restore: write snapshot back into                   │
-│     window.__gothic_ctx._state                          │
-│     → new instance re-subscribes on its first           │
-│       scheduler tick and picks up the current state     │
-└─────────────────────────────────────────────────────────┘
-```
-
-This is what a hard page-reload does, but transparent to the user and with no visible flash. The main implementation risk is the window between step 2 and step 4 — any click during that window would see a missing WASM function. That window can be made arbitrarily short (< 1 ms on a warm binary) by buffering events in JS during the swap.
-
-**Complexity**: high — requires changes to the bootstrap script and the module lifecycle.
-**Impact**: complete — resets committed memory to zero, repeatable on demand.
-
----
-
-#### Solution 2 — Zero-copy / streaming decode on subscribers
-
-Right now every subscriber does:
-
-```
-JS Uint8Array view  ──CopyBytesToGo──▶  Go []byte copy  ──decode──▶  struct
-                                        (12 MB per subscriber)
-```
-
-If the codec read directly from the `Uint8Array` view through a `unsafe.Slice` pointer into WASM linear memory — without allocating a Go-side copy — subscriber allocations drop to near zero:
-
-```
-JS Uint8Array view  ──unsafe pointer──▶  decode directly from shared buffer
-                                         (0 extra allocation per subscriber)
-```
-
-The sender still needs one encoded copy (to pass the raw offset to JS), but the `numSubscribers` multiplier disappears.
-
-**Complexity**: medium — requires a streaming binary reader in the generated codec and careful lifetime management (the view must remain valid during decode).
-**Impact**: reduces per-broadcast allocation by `~payloadSize × (numSubscribers - 1)`. Does not eliminate the committed-memory ratchet — just slows it significantly.
-
----
-
-#### Solution 3 — Keep large data in JS, pass handles to Go
-
-For genuinely large data (file contents, large lists, binary blobs), store it in a JS `Map` keyed by a small ID string. Go context only carries the ID. Any module that needs the data asks JS for it by ID via a small helper call.
-
-```
-Context payload:  { listId: "abc123", count: 10482, theme: "dark" }   ← ~50 bytes
-JS Map:           "abc123" → Uint8Array(12 MB)                        ← never crosses bridge
-```
-
-Go never holds the 12 MB blob. The committed-memory ratchet does not trigger because the large allocation never enters the Go heap.
-
-**Complexity**: low for new code, medium to retrofit existing context structs.
-**Impact**: complete for the specific large-data case. Does not help if the large payload is genuinely needed inside Go.
-
----
-
-#### Solution 4 — Per-field subscriptions
-
-The generated `<Struct>Context()` API broadcasts the whole struct as one blob. A module that only needs `Theme` and `Pings` still decodes and allocates the entire payload including the 10k-item list it never reads.
-
-Per-field context keys (`BinaryKey` per field, already the underlying primitive) would let each module only allocate for the fields it actually subscribes to. The 10k-item list only enters the Go heap in modules that explicitly subscribe to it.
-
-**Complexity**: medium — API change; generated code must expose field-level keys without breaking the struct-level ergonomics.
-**Impact**: reduces allocation per broadcast proportionally to how many modules skip the large fields. Does not eliminate the ratchet for modules that do need the large field.
-
----
-
-#### Solution 5 — Context is not a database *(design constraint)*
-
-The honest root cause of the stress-test scenario is a misuse of the context system. Context is designed for UI state: selected tab, theme, user info, a feature flag — payloads measured in bytes to low kilobytes. A 10k-item list belongs in a server-side paginated endpoint, a `ContextKey` holding only the current page slice, or IndexedDB for offline scenarios.
-
-**Rule of thumb: if your encoded context payload exceeds ~100 kB, treat it as a design smell.** Split the struct, paginate, or move the large data to JS storage. At 100 kB and below, the heap-pressure ratchet is slow enough that normal page navigation (which unloads and resets the WASM module) prevents any real accumulation.
-
-This is not "it is what it is" — it is a deliberate boundary. The context system is a reactive broadcast channel, not a shared heap. Keeping payloads small is the cheapest mitigation of all.
-
----
-
-### Summary
-
-| Solution | Eliminates ratchet? | Complexity | Status |
-|----------|--------------------|-----------:|--------|
-| Module instance recycling | ✅ fully | High | Not implemented |
-| Zero-copy subscriber decode | Slows it (÷ numSubscribers) | Medium | Not implemented |
-| Large data in JS / handles | ✅ for large-data case | Low–Medium | Available today |
-| Per-field subscriptions | Partially | Medium | Not implemented |
-| Keep payloads < 100 kB | ✅ in practice | Design discipline | Recommended now |
-
-For most production Gothic apps, **Solution 5 (design discipline) + Solution 3 (JS-side storage for blobs)** is sufficient. **Solution 1 (module recycling)** is the right long-term answer for apps that genuinely need large cross-module state.
+**Design constraint** — context is designed for UI state: selected tab, theme, user info, feature flags — payloads in bytes to low kilobytes. If your encoded context payload exceeds ~100 kB, treat it as a design smell. Split the struct, paginate, or move large data to a server-side endpoint. At 100 kB and below, the heap-pressure ratchet is slow enough that normal page navigation (which unloads and resets the WASM module) prevents any real accumulation.
 
 ### What to watch for in your app
 
 If you use the context system with large structs, monitor Chrome Task Manager's "Memory" column during development. If it climbs monotonically with each context broadcast, you are hitting this constraint. The `_values[]` counter is **not** a useful signal here — it will stay flat (the JS-bridge leaks are fixed), while RSS still grows.
 
 The `unreachable` trap is the dramatic end-state; the subtler version — Chrome RSS climbing to 2–3 GB and slowing down — happens well before the crash and is the real user-facing problem in long-running sessions.
-
----
-
-## Memory leak fixes — May 2026
-
-Three `_values[]` leaks affecting the context broadcast path, the DOM scope walk, and the ping manager were identified and fixed during the v2.16.0 development cycle. For the full root-cause analysis, reproduction steps, heap profiles, and fix rationale, see:
-
-`.claude/project-plan/MEMORY_LEAK_INVESTIGATION.md`
-
-The short summary: TinyGo's `wasm_exec.js` bridge only reclaims `_values[]` slots for string-typed values; every other JS object type accumulates indefinitely. The fixes eliminate or cache every non-string JS object that the Gothic runtime creates on a per-event basis.
 
 ---
 
@@ -802,27 +897,151 @@ from `wasm_ctx_manager_main.go.tmpl`. It is mounted once per page via
   `map[string][]byte` of per-field byte slices (`_fields`).
 - Listens to **per-field** set-requests from consumer pages via
   `ListenCtxSetReqField(key, field, fn)`. On each one it writes
-  `_fields[field] = b` and re-broadcasts the field event.
+  `_fields[field] = b`, re-broadcasts the field event, and marks `_wholeDirty`.
 - Listens to **whole-struct** set-requests via `ListenCtxSetReq(key, fn)` —
-  used by `ctx.Set(struct)` fan-out and by hydration. It stores the incoming
-  bytes verbatim as `_lastWholeEncoded` and slices them zero-copy into
-  `_fields[]` via `_captureAllFields(b)`.
+  used by `ctx.Set(struct)` fan-out. It runs a **zero-allocation diff loop**
+  (see below) to broadcast only changed fields, then updates the JS store.
 - Broadcasts the whole-struct online ack on `ListenCtxPing` and at boot.
-  Consumers only hit this once per mount; per-mutation traffic is per-field.
+  Consumers only get a full `gothic:ctx-online` event on pings; per-mutation
+  traffic is per-field events only.
 
 Consumer pages never write canonical state directly — they always dispatch a
 `RequestCtxSetField` (or the whole-struct fan-out from `ctx.Set`) and wait for
 the manager's broadcast to come back through `ApplyExternal`.
 
+### `ListenCtxSetReq` diff loop — zero-allocation field comparison
+
+When `ctx.Set(struct)` is called by a consumer, it encodes the whole struct and
+sends it as `gothic:ctx-req:<key>`. The manager's handler must decide which
+fields actually changed and broadcast only those. The naive approach — decode
+the full struct then re-encode each field — allocates O(N) objects for every
+large slice field on every click and causes WASM heap exhaustion under stress.
+
+The v2.16.0 approach uses **`_capture*` helpers** instead:
+
+```
+Incoming whole-struct bytes
+─────────────────────────────────────────────────────────────────────
+  d := &Decoder{Buf: incoming}
+
+  Field 1: nb = _capturePings(d)       ← advances d.Pos past []Item
+                                          returns sub-slice, zero alloc
+           _bytesEqual(nb, _fields["Pings"])  ← raw byte compare
+           → unchanged: skip broadcast
+
+  Field 2: nb = _captureTheme(d)       ← advances d.Pos past string
+           _bytesEqual(nb, _fields["Theme"])
+           → CHANGED: copy + broadcast "gothic:context:page:Theme"
+           _wholeDirty = true
+
+  Field 3: nb = _captureLabel(d)       ...
+  ...
+
+  if _wholeDirty:
+    _ensureWholeFresh()             ← lazy rebuild of _lastWholeEncoded
+    UpdateCtxOnlineStore("page",    ← update JS map, NO event dispatch
+      _lastWholeEncoded)
+─────────────────────────────────────────────────────────────────────
+```
+
+Each `_capture<FieldName>(d *Decoder) []byte` helper:
+- Advances `d.Pos` past the field's wire bytes using **skip helpers** (`_skip_StructName`) for struct/slice/map types — pure pointer arithmetic, no allocations.
+- Returns a sub-slice of `incoming` pointing at that field's bytes. No copy, no decode.
+
+`_bytesEqual` compares two byte slices without importing `bytes`:
+
+```go
+func _bytesEqual(a, b []byte) bool {
+    if len(a) != len(b) { return false }
+    for i := range a { if a[i] != b[i] { return false } }
+    return true
+}
+```
+
+`_skip_<Name>` advances the decoder past one encoded value of type `<Name>` without allocating a Go struct. Used internally by `_capture*` to walk `[]Item` fields in O(N) pointer arithmetic instead of O(N) allocations.
+
+### `UpdateCtxOnlineStore` — store refresh without event dispatch
+
+`_broadcastOnline()` does two things: updates the JS `window.__gothic_context` string store AND dispatches `gothic:ctx-online:<key>` (which updates `window.__gothic_ctx` binary buffer via `__gothic_set`). The dispatch triggers `ListenCtxOnline` in **every running consumer WASM**, which allocates the full encoded struct bytes (`incoming := []byte(detail)`) — hundreds of KB for large structs — on every click.
+
+Before v2.16.0, `ListenCtxSetReq` called `_broadcastOnline()` on every click to fix a startup race (T5: late-joining consumer reads stale store). This caused heap exhaustion under 600-click stress tests.
+
+The fix: `UpdateCtxOnlineStore` updates only the JS map, without the event:
+
+```go
+// manager template — ListenCtxSetReq end
+if _wholeDirty {
+    _ensureWholeFresh()
+    UpdateCtxOnlineStore("{{.KeyName}}", _lastWholeEncoded)
+}
+```
+
+```
+                     ┌─ _broadcastOnline() ─────────────────────────────┐
+                     │  Updates JS store ✓                              │
+                     │  Dispatches gothic:ctx-online → consumers alloc  │
+                     │  full struct on every click  ✗ (heap pressure)  │
+                     └──────────────────────────────────────────────────┘
+
+                     ┌─ UpdateCtxOnlineStore() ─────────────────────────┐
+                     │  Updates JS store ✓                              │
+                     │  No event dispatch → consumers NOT triggered     │
+                     │  on clicks — only on pings  ✓                   │
+                     └──────────────────────────────────────────────────┘
+
+  Late-joining consumer:  ReadCtxStore() → reads JS map → fresh data ✓
+  Ping path:              ListenCtxPing → _broadcastOnline() → full hydration ✓
+```
+
+T5 (startup race) is fully covered because `ReadCtxStore` reads the same JS map that `UpdateCtxOnlineStore` writes. Consumers that arrive after any mutation will always read the latest state.
+
 ### Per-field vs whole-struct dispatch paths
 
-| Operation                   | Wire event                              | Manager handler          |
-|-----------------------------|-----------------------------------------|--------------------------|
-| `field.SetBroadcast(...)`   | `gothic:ctx-req:<key>:<field>`          | `ListenCtxSetReqField`   |
-| `ctx.Set(struct)`           | `gothic:ctx-req:<key>` (whole)          | `ListenCtxSetReq`        |
-| Manager → consumer per-field| `gothic:context:<key>:<field>`          | `ListenCtxEventField`    |
-| Manager → consumer hydrate  | `gothic:ctx-online:<key>` (whole)       | `ListenCtxOnline`        |
-| Consumer → manager wake     | `gothic:ctx-ping:<key>`                 | `ListenCtxPing`          |
+| Trigger | Wire event | Direction | Handler |
+|---------|-----------|-----------|---------|
+| `ctx.Theme.Set("dark")` | `gothic:ctx-req:<key>:<field>` | consumer → manager | `ListenCtxSetReqField` |
+| `ctx.Set(struct)` | `gothic:ctx-req:<key>` | consumer → manager | `ListenCtxSetReq` (diff loop) |
+| Manager broadcasts changed field | `gothic:context:<key>:<field>` | manager → all consumers | `ListenCtxEventField` |
+| Manager ping response / boot | `gothic:ctx-online:<key>` | manager → all consumers | `ListenCtxOnline` |
+| Consumer needs hydration | `gothic:ctx-ping:<key>` | consumer → manager | `ListenCtxPing` |
+| Late-joining consumer | `ReadCtxStore("key")` | reads JS map directly | (no event) |
+
+```
+Consumer                  JS event bus              Manager
+──────────────────────────────────────────────────────────────────
+ctx.Theme.Set("dark")
+  │ encode "dark" → bytes
+  │ RequestCtxSetField ──▶ gothic:ctx-req:page:Theme ──▶ store bytes
+  │                                                      broadcast field
+  │ ◀─────────────── gothic:context:page:Theme ◀─────── (only if changed)
+  │ decode bytes
+  │ ApplyExternal("dark")
+  │ Observe callbacks fire
+  ▼
+DOM updated
+
+ctx.Set(Page{...})
+  │ encode whole struct → bytes
+  │ RequestCtxSet ──────▶ gothic:ctx-req:page ──────▶ _captureAllFields
+  │                                                    diff each field
+  │                                                    for changed fields:
+  │ ◀──── gothic:context:page:Theme ◀────────────────   BroadcastField
+  │ ◀──── gothic:context:page:Count ◀────────────────   BroadcastField
+  │                                                    UpdateCtxOnlineStore
+  ▼                                                    (no gothic:ctx-online)
+DOM updated
+
+New page load
+  │ ReadCtxStore("page") ─────────────────────────▶ JS map lookup
+  │ ◀──────────────── whole-struct bytes ◀─────────  (always fresh)
+  │ decode → apply all fields
+  │ ctx._online = true
+  │ — OR if store empty —
+  │ PingUntilOnline ──────▶ gothic:ctx-ping:page ──▶ _broadcastOnline()
+  │ ◀──── gothic:ctx-online:page ◀───────────────────  full hydration
+  ▼
+online
+```
 
 `<field>` is always the literal Go field name (`Pings`, `Theme`, `Image5MB`) —
 no case transformation.
@@ -842,16 +1061,15 @@ The generated consumer template (`wasm_page_main.go.tmpl`) wraps every field's
 `BeginBatch()` / `EndBatch()` pair. Without batching, hydrating a 39-field
 struct fired 39 separate Observe notifications, each one re-running every
 subscriber's callback. With batching, the page sees one coalesced reactive
-update for the entire struct — a critical perf win for the
-`heap-snapshot-leak.spec.ts` scenario where a single context push must not
-ratchet the WASM heap.
+update for the entire struct — a critical perf win when a single context push
+must not ratchet the WASM heap.
 
 ### Manager-side lazy rebuild (`_wholeDirty`)
 
 The first iteration of the per-field manager eagerly called `_rebuildWhole()`
 after every `ListenCtxSetReqField` so `_lastWholeEncoded` always reflected the
-latest state. Under `codec-stress-random.spec.ts` workloads — random clicks
-that include the 5 MB image button — this allocated a fresh ≥5 MB buffer on
+latest state. Under stress workloads — random clicks that include a 5 MB image
+field — this allocated a fresh ≥5 MB buffer on
 every click. TinyGo wasm32's GC could not keep up and the run crashed with
 `unreachable` after ~150 clicks.
 
