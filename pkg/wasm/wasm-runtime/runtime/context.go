@@ -3,7 +3,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"strconv"
 	"syscall/js"
 	"time"
@@ -25,7 +24,7 @@ type SharedContext interface{ isGothicSharedContext() }
 
 // ContextKey is a typed context identifier that carries its own codec.
 // T encodes the value type — provider and consumer must use the same key.
-// Construct via the factory functions (IntKey, StringKey, JsonKey, etc.),
+// Construct via the factory functions (IntKey, StringKey, BinaryKey, etc.),
 // not as a struct literal.
 type ContextKey[T any] struct {
 	Name   string
@@ -159,23 +158,6 @@ func ByteKey(name string) ContextKey[byte] {
 		func(v byte) string { return strconv.FormatUint(uint64(v), 10) },
 		func(s string) byte { n, _ := strconv.ParseUint(s, 10, 8); return byte(n) },
 	)
-}
-
-// JsonKey returns a ContextKey for any struct or slice type, serialized as JSON.
-// T must be JSON-serializable (exported fields, no channels or functions).
-func JsonKey[T any](name string) ContextKey[T] {
-	return ContextKey[T]{
-		Name: name,
-		encode: func(v T) string {
-			b, _ := json.Marshal(v)
-			return string(b)
-		},
-		decode: func(s string) T {
-			var v T
-			_ = json.Unmarshal([]byte(s), &v)
-			return v
-		},
-	}
 }
 
 // ── JS context store ─────────────────────────────────────────────────────────
@@ -478,13 +460,12 @@ func PingUntilOnline(keyName string, isOnline func() bool) {
 }
 
 // CustomKey returns a ContextKey with user-supplied encode/decode functions.
-// Use this to avoid the encoding/json dependency when JsonKey's binary size is a concern.
 func CustomKey[T any](name string, encode func(T) string, decode func(string) T) ContextKey[T] {
 	return ContextKey[T]{Name: name, encode: encode, decode: decode}
 }
 
 // BinaryKey returns a ContextKey that serializes T using a compact little-endian binary
-// codec instead of JSON. No reflection, no encoding/json — just typed Encoder/Decoder calls.
+// codec. No reflection, no encoding/json — just typed Encoder/Decoder calls.
 // The encode function writes fields onto e; the decode function reads them back and returns T.
 // Field order must match between encode and decode.
 //

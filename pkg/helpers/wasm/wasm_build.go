@@ -32,7 +32,7 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 		outPath := filepath.Join(outDir, page.OutputName+".wasm"+compressedExt)
 		if h.cache.upToDate(page.OutputName, hash) {
 			if _, err := os.Stat(outPath); err == nil {
-				fmt.Printf("wasm: %s → up to date\n", page.OutputName)
+				wasmUpToDate(page.OutputName)
 				return nil
 			}
 		}
@@ -62,7 +62,7 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	mainPath := filepath.Join(genDir, "main.go")
 	ctxSnippets, ctxStructs, ctxAliases := h.collectContextSnippets()
 	body := h.rewriteContextCalls(page.FuncBody, ctxStructs)
-	if err := h.writeWasmMain(page.SourceFile, body, page.Imports, ctxSnippets, ctxStructs, ctxAliases, mainPath); err != nil {
+	if err := h.writeWasmMain(page.SourceFile, body, page.Imports, page.Helpers, ctxSnippets, ctxStructs, ctxAliases, mainPath); err != nil {
 		return err
 	}
 
@@ -116,8 +116,7 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	os.Remove(absOutFile)
 
 	finalSize, _ := h.fileSize(finalFile)
-	fmt.Printf("wasm: %s → %s → %s (%s)\n",
-		page.OutputName, h.formatBytes(wasmSize), h.formatBytes(finalSize), compressionLabel(page.Compression))
+	wasmBuildResult(page.OutputName, h.formatBytes(wasmSize), h.formatBytes(finalSize), compressionLabel(page.Compression))
 	if hash != "" {
 		h.cache.update(page.OutputName, hash)
 	}
@@ -146,7 +145,7 @@ func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 	h.cache = loadWasmCache()
 
 	if err := h.GenerateContextManagers(outDir); err != nil {
-		fmt.Fprintf(os.Stderr, "wasm: context manager build failed: %v\n", err)
+		wasmErrorf("context manager build failed: %v", err)
 	}
 
 	g, gctx := errgroup.WithContext(context.Background())
@@ -206,7 +205,7 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 		outPath := filepath.Join(outDir, wasmName+".wasm"+compressionExt(compression))
 		if h.cache.upToDate(wasmName, hash) {
 			if _, err := os.Stat(outPath); err == nil {
-				fmt.Printf("wasm: %s → up to date\n", wasmName)
+				wasmUpToDate(wasmName)
 				return nil
 			}
 		}
@@ -295,14 +294,14 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 	os.Remove(absOutFile)
 
 	compSize, _ := h.fileSize(compOutFile)
-	fmt.Printf("wasm: %s → %s → %s (%s)\n", wasmName, h.formatBytes(wasmSize), h.formatBytes(compSize), compressionLabel(compression))
+	wasmBuildResult(wasmName, h.formatBytes(wasmSize), h.formatBytes(compSize), compressionLabel(compression))
 	if hash != "" {
 		h.cache.update(wasmName, hash)
 	}
 	return nil
 }
 
-func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, ctxSnippets []string, ctxStructs []structInfo, aliases map[string]string, dest string) error {
+func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, helpers []string, ctxSnippets []string, ctxStructs []structInfo, aliases map[string]string, dest string) error {
 	codecs, err := h.buildCodecData(ctxStructs, aliases)
 	if err != nil {
 		return fmt.Errorf("wasm: codec: %w", err)
@@ -354,5 +353,6 @@ func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, ctxSni
 		WasmFuncs:   wasmFuncs,
 		CtxSnippets: ctxSnippets,
 		Body:        indented.String(),
+		Helpers:     helpers,
 	})
 }

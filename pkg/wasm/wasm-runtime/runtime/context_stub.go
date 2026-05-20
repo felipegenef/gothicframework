@@ -3,7 +3,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"strconv"
 )
 
@@ -147,21 +146,6 @@ func ByteKey(name string) ContextKey[byte] {
 		func(v byte) string { return strconv.FormatUint(uint64(v), 10) },
 		func(s string) byte { n, _ := strconv.ParseUint(s, 10, 8); return byte(n) },
 	)
-}
-
-func JsonKey[T any](name string) ContextKey[T] {
-	return ContextKey[T]{
-		Name: name,
-		encode: func(v T) string {
-			b, _ := json.Marshal(v)
-			return string(b)
-		},
-		decode: func(s string) T {
-			var v T
-			_ = json.Unmarshal([]byte(s), &v)
-			return v
-		},
-	}
 }
 
 func CustomKey[T any](name string, encode func(T) string, decode func(string) T) ContextKey[T] {

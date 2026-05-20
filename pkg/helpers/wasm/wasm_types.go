@@ -92,6 +92,7 @@ type WasmPageMainData struct {
 	WasmFuncs   []WasmCtxFuncData
 	CtxSnippets []string
 	Body        string
+	Helpers     []string
 }
 
 // ManagerFieldData carries per-field information for the manager template.

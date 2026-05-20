@@ -2,21 +2,36 @@ package helpers
 
 import (
 	"fmt"
+	"go/ast"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+
+	"github.com/felipegenef/gothicframework/pkg/helpers/wasm/astx"
 )
 
 // Page scanning: walk pagesDir and componentsDir looking for *_templ.go files
 // that declare a ClientSideState body (either inline or via a named function).
 // Extract that body and the page's std imports for the WASM build pipeline.
-
-var pageStateInlineRe = regexp.MustCompile(`(?m)ClientSideState:\s*func\s*\(\s*\)\s*\{`)
-var pageStateNamedRe = regexp.MustCompile(`(?m)ClientSideState:\s*(\w+)`)
-var wasmCompressionRe = regexp.MustCompile(`(?m)WasmCompression:\s*routes\.(\w+)`)
+//
+// As of Phase 1 of the AST refactor, extraction is driven by go/packages +
+// go/ast rather than regular expressions. A single astx.Loader is constructed
+// at the top of ScanPages over the current working directory ("./...") and is
+// reused for every scanned file. The loader is cleared via defer so it does
+// not leak into later calls.
 
 func (h *WasmHelper) ScanPages(pagesDir, componentsDir string) ([]WasmPage, error) {
+	// Initialise the AST loader over the project root. "." is the canonical
+	// root used by all CLI commands that invoke ScanPages (deploy, wasm, hot
+	// reload). Loading once means TypesInfo is shared across page files in
+	// the same package, which is required for cross-file helper resolution.
+	loader, err := astx.NewLoader(".")
+	if err != nil {
+		return nil, fmt.Errorf("wasm: load packages: %w", err)
+	}
+	h.astLoader = loader
+	defer func() { h.astLoader = nil }()
+
 	var pages []WasmPage
 	for _, dir := range []string{pagesDir, componentsDir} {
 		if dir == "" {
@@ -46,42 +61,79 @@ func (h *WasmHelper) ScanPages(pagesDir, componentsDir string) ([]WasmPage, erro
 }
 
 func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return WasmPage{}, false, fmt.Errorf("read %s: %w", path, err)
+	if h.astLoader == nil {
+		return WasmPage{}, false, fmt.Errorf("wasm: scanFile called without an initialised astLoader (call ScanPages)")
 	}
-	content := string(raw)
-
-	var body string
-
-	if loc := pageStateInlineRe.FindStringIndex(content); loc != nil {
-		openBrace := loc[1] - 1
-		body = h.extractFuncBody(content, openBrace)
-		if body == "" {
-			return WasmPage{}, false, fmt.Errorf("wasm: could not extract inline ClientSideState body in %s", path)
-		}
-	} else if m := pageStateNamedRe.FindStringSubmatch(content); m != nil {
-		funcName := m[1]
-		funcRe := regexp.MustCompile(`(?m)^func\s+` + regexp.QuoteMeta(funcName) + `\s*\(\s*\)\s*\{`)
-		floc := funcRe.FindStringIndex(content)
-		if floc == nil {
-			return WasmPage{}, false, fmt.Errorf("wasm: ClientSideState func %s not found in %s", funcName, path)
-		}
-		openBrace := floc[1] - 1
-		body = h.extractFuncBody(content, openBrace)
-		if body == "" {
-			return WasmPage{}, false, fmt.Errorf("wasm: could not extract body of %s in %s", funcName, path)
-		}
-	} else {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return WasmPage{}, false, fmt.Errorf("wasm: abs %s: %w", path, err)
+	}
+	entry, err := h.astLoader.Get(absPath)
+	if err != nil {
+		// File is not in any loaded package — silently skip (e.g. generated
+		// files outside the module). This mirrors the old regex behaviour of
+		// quietly ignoring files with no match.
 		return WasmPage{}, false, nil
 	}
 
-	stdImports := h.filterStdImports(content, body)
+	res, found, err := astx.ExtractClientSideStateBody(entry)
+	if err != nil {
+		return WasmPage{}, false, fmt.Errorf("wasm: extract ClientSideState in %s: %w", path, err)
+	}
+	if !found {
+		return WasmPage{}, false, nil
+	}
+
+	helperDecls, _, err := astx.ExtractUsedHelpers(entry.Pkg, res.Body)
+	if err != nil {
+		return WasmPage{}, false, fmt.Errorf("wasm: extract helpers in %s: %w", path, err)
+	}
+
+	importSpecs, err := astx.ExtractUsedImports(entry.Pkg, res.Body)
+	if err != nil {
+		return WasmPage{}, false, fmt.Errorf("wasm: extract imports in %s: %w", path, err)
+	}
+
+	// Format helper decls into Go source strings.
+	var helpers []string
+	for _, d := range helperDecls {
+		src, err := astx.FormatNode(d, h.astLoader.Fset)
+		if err != nil {
+			return WasmPage{}, false, fmt.Errorf("wasm: format helper in %s: %w", path, err)
+		}
+		helpers = append(helpers, src)
+	}
+
+	// Format body (outer braces stripped by FormatNode for *ast.BlockStmt).
+	body, err := astx.FormatNode(res.Body, h.astLoader.Fset)
+	if err != nil {
+		return WasmPage{}, false, fmt.Errorf("wasm: format body in %s: %w", path, err)
+	}
+
+	// Convert import specs to legacy []string format, keeping only std-lib
+	// imports (paths with no "." in the first segment). Preserve aliases.
+	stdImports := stdImportLines(importSpecs)
+
+	// If any helper references an identifier that needs an external pkg, we
+	// also need to look at imports used inside helpers. Re-scan over helper
+	// declarations too.
+	for _, d := range helperDecls {
+		moreImports, err := astx.ExtractUsedImports(entry.Pkg, d)
+		if err != nil {
+			return WasmPage{}, false, fmt.Errorf("wasm: extract helper imports in %s: %w", path, err)
+		}
+		for _, line := range stdImportLines(moreImports) {
+			if !containsString(stdImports, line) {
+				stdImports = append(stdImports, line)
+			}
+		}
+	}
+
 	httpPath := h.normalizeWasmHttpPath(path)
 	outputName := h.wasmOutputName(httpPath)
 
 	compression := WasmCompressionGzip
-	if m := wasmCompressionRe.FindStringSubmatch(content); m != nil && m[1] == "BROTLI" {
+	if res.Compression == "BROTLI" {
 		compression = WasmCompressionBrotli
 	}
 
@@ -89,120 +141,41 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 		SourceFile:  path,
 		FuncBody:    body,
 		Imports:     stdImports,
+		Helpers:     helpers,
 		HttpPath:    httpPath,
 		OutputName:  outputName,
 		Compression: compression,
 	}, true, nil
 }
 
-// extractFuncBody returns the substring between the matching braces starting
-// at openBrace (which must point to the '{' immediately before the body).
-// It is brace-depth aware and skips strings, raw strings, and comments so
-// braces inside those are not counted.
-func (h *WasmHelper) extractFuncBody(content string, openBrace int) string {
-	depth := 0
-	i := openBrace
-	start, end := -1, -1
-	for i < len(content) {
-		switch content[i] {
-		case '{':
-			depth++
-			if depth == 1 {
-				start = i + 1
-			}
-		case '}':
-			depth--
-			if depth == 0 {
-				end = i
-				goto done
-			}
-		case '"':
-			i++
-			for i < len(content) && content[i] != '"' {
-				if content[i] == '\\' {
-					i++
-				}
-				i++
-			}
-		case '`':
-			i++
-			for i < len(content) && content[i] != '`' {
-				i++
-			}
-		case '/':
-			if i+1 < len(content) {
-				if content[i+1] == '/' {
-					for i < len(content) && content[i] != '\n' {
-						i++
-					}
-				} else if content[i+1] == '*' {
-					i += 2
-					for i+1 < len(content) {
-						if content[i] == '*' && content[i+1] == '/' {
-							i++
-							break
-						}
-						i++
-					}
-				}
-			}
-		}
-		i++
-	}
-done:
-	if start == -1 || end == -1 {
-		return ""
-	}
-	return strings.TrimSpace(content[start:end])
-}
-
-// filterStdImports returns only standard-library imports that are referenced
-// in body. This is what the generated WASM main.go needs.
-func (h *WasmHelper) filterStdImports(content, body string) []string {
-	raw := h.extractImportLines(content)
-	var kept []string
-	for _, line := range raw {
-		line = strings.TrimSpace(line)
-		if line == "" {
+// stdImportLines filters import specs to keep only standard-library imports
+// (those whose first path segment contains no "."), formatted as the
+// legacy WasmPage.Imports lines expect: either `"path"` or `alias "path"`.
+func stdImportLines(specs []*ast.ImportSpec) []string {
+	var out []string
+	for _, sp := range specs {
+		if sp.Path == nil {
 			continue
 		}
-		path, alias := h.parseImportLine(line)
-		if path == "" {
-			continue
-		}
+		path := strings.Trim(sp.Path.Value, "\"")
 		first := strings.SplitN(path, "/", 2)[0]
 		if strings.Contains(first, ".") {
-			continue
+			continue // third-party
 		}
-		ident := alias
-		if ident == "" || ident == "_" || ident == "." {
-			parts := strings.Split(path, "/")
-			ident = parts[len(parts)-1]
+		line := sp.Path.Value // already quoted
+		if sp.Name != nil && sp.Name.Name != "" {
+			line = sp.Name.Name + " " + line
 		}
-		if strings.Contains(body, ident+".") {
-			kept = append(kept, line)
-		}
+		out = append(out, line)
 	}
-	return kept
+	return out
 }
 
-func (h *WasmHelper) extractImportLines(content string) []string {
-	blockRe := regexp.MustCompile(`(?s)import\s*\((.+?)\)`)
-	m := blockRe.FindStringSubmatch(content)
-	if m == nil {
-		return nil
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
 	}
-	return strings.Split(m[1], "\n")
-}
-
-func (h *WasmHelper) parseImportLine(line string) (path, alias string) {
-	line = strings.TrimSpace(line)
-	start := strings.Index(line, `"`)
-	end := strings.LastIndex(line, `"`)
-	if start == -1 || start == end {
-		return "", ""
-	}
-	path = line[start+1 : end]
-	alias = strings.TrimSpace(line[:start])
-	return path, alias
+	return false
 }

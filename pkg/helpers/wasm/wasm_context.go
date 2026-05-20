@@ -7,8 +7,9 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+
+	"github.com/felipegenef/gothicframework/pkg/helpers/wasm/astx"
 )
 
 // Context scanning and parsing.
@@ -18,9 +19,6 @@ import (
 // user code snippets for the WASM build pipeline.
 
 const tmplContextGen = ".gothicCli/templates/wasm/context_gen.go"
-
-var importBlockRe = regexp.MustCompile(`(?s)import\s*\([^)]*\)|import\s+(?:\.\s+|[\w]+\s+)?"[^"]+"`)
-var pkgDeclRe = regexp.MustCompile(`(?m)^package\s+\S+.*\n?`)
 
 // collectContextSnippets reads src/context/*.go, parses struct definitions,
 // generates context_gen.go (server side), and returns inlinable user code
@@ -77,9 +75,11 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 	h.writeContextKeyStubs(allStructs, allAliases, pkgName)
 
 	for _, f := range files {
-		src := f.src
-		src = pkgDeclRe.ReplaceAllLiteralString(src, "")
-		src = importBlockRe.ReplaceAllLiteralString(src, "")
+		src, err := astx.StripPackageAndImports(f.src)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "context strip %s: %v\n", f.name, err)
+			os.Exit(1)
+		}
 		src = h.rewriteAutoKeys(src)
 		src = strings.TrimSpace(src)
 		if src != "" {

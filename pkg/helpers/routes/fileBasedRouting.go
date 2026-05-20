@@ -364,33 +364,23 @@ type TemplateInfo struct {
 }
 
 type FileBasedRouteHelper struct {
-	TemplateInfo            TemplateInfo
-	PackageRegex            *regexp.Regexp
-	RouteConfigNameRegex    *regexp.Regexp
-	ApiRouteConfigNameRegex *regexp.Regexp
-	RouteFuncNameRegex      *regexp.Regexp
-	ApiRouteFuncNameRegex   *regexp.Regexp
-	OutputFile              string
-	TemplateFile            string
-	ApiRoutesFolder         string
-	ComponentRoutesFolder   string
-	PageRoutesFolder        string
-	Template                helpers.TemplateHelper
+	TemplateInfo          TemplateInfo
+	OutputFile            string
+	TemplateFile          string
+	ApiRoutesFolder       string
+	ComponentRoutesFolder string
+	PageRoutesFolder      string
+	Template              helpers.TemplateHelper
 }
 
 func NewFileBasedRouteHelper() FileBasedRouteHelper {
 	return FileBasedRouteHelper{
-		OutputFile:              "./src/routes/routes_gen.go",
-		TemplateFile:            "./.gothicCli/templates/routes_gen.go",
-		ApiRoutesFolder:         "./src/api",
-		ComponentRoutesFolder:   "./src/components",
-		PageRoutesFolder:        "./src/pages",
-		PackageRegex:            regexp.MustCompile(`(?m)^package\s+(\w+)`),
-		RouteConfigNameRegex:    regexp.MustCompile(`(?m)^var\s+(\w+)\s*=\s*routes\.RouteConfig\[[^\]]+\]\s*{([^}]*)}`),
-		ApiRouteConfigNameRegex: regexp.MustCompile(`(?m)^var\s+(\w+)\s*=\s*routes\.ApiRouteConfig\s*{([^}]+)}`),
-		RouteFuncNameRegex:      regexp.MustCompile(`(?m)^func\s+(\w+)\s*\(.*\)\s+templ\.Component\s*{`),
-		ApiRouteFuncNameRegex:   regexp.MustCompile(`(?m)^func\s+(\w+)\s*\(.*\)\s*{`),
-		Template:                helpers.NewTemplateHelper(),
+		OutputFile:            "./src/routes/routes_gen.go",
+		TemplateFile:          "./.gothicCli/templates/routes_gen.go",
+		ApiRoutesFolder:       "./src/api",
+		ComponentRoutesFolder: "./src/components",
+		PageRoutesFolder:      "./src/pages",
+		Template:              helpers.NewTemplateHelper(),
 	}
 }
 
@@ -426,15 +416,16 @@ func (helper *FileBasedRouteHelper) collectApiRoutesInfo(goModName string) error
 			route.OriginFile = path
 			route.ConfigName = "DefaultApiConfig"
 			route.ConfigPackageName = "routes"
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("failed to read file %s: %w", path, err)
+
+			scan, scanErr := astScanFile(path)
+			if scanErr != nil {
+				// Mid-edit / malformed source: skip silently, matching prior regex behavior.
+				return nil
 			}
 
-			packageMatch := helper.PackageRegex.FindStringSubmatch(string(content))
-			if len(packageMatch) > 1 {
-				route.PackageName = packageMatch[1]
-				route.ConfigPackageName = packageMatch[1]
+			if scan.PackageName != "" {
+				route.PackageName = scan.PackageName
+				route.ConfigPackageName = scan.PackageName
 				relPath, err := filepath.Rel("src", filepath.Dir(path))
 				if err != nil {
 					return fmt.Errorf("failed to get relative import path for %s: %w", path, err)
@@ -446,17 +437,15 @@ func (helper *FileBasedRouteHelper) collectApiRoutesInfo(goModName string) error
 				helper.TemplateInfo.Imports = append(helper.TemplateInfo.Imports, importStruct)
 			}
 
-			configMatch := helper.ApiRouteConfigNameRegex.FindStringSubmatch(string(content))
-			if len(configMatch) > 1 {
-				route.ConfigName = configMatch[1]
+			if scan.ApiRouteConfigName != "" {
+				route.ConfigName = scan.ApiRouteConfigName
 			} else {
 				route.ConfigName = "DefaultApiConfig"
 				route.ConfigPackageName = "routes"
 			}
 
-			funcMatch := helper.ApiRouteFuncNameRegex.FindStringSubmatch(string(content))
-			if len(funcMatch) > 1 {
-				route.FunctionName = funcMatch[1]
+			if scan.ApiFuncName != "" {
+				route.FunctionName = scan.ApiFuncName
 			}
 
 			route.HttpPath = helper.normalizeHttpPath(path)
@@ -482,15 +471,15 @@ func (helper *FileBasedRouteHelper) collectComponentsInfo(goModName string) erro
 			route.OriginFile = path
 			route.ConfigName = "DefaultConfig"
 			route.ConfigPackageName = "routes"
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("failed to read file %s: %w", path, err)
+
+			scan, scanErr := astScanFile(path)
+			if scanErr != nil {
+				return nil
 			}
 
-			packageMatch := helper.PackageRegex.FindStringSubmatch(string(content))
-			if len(packageMatch) > 1 {
-				route.PackageName = packageMatch[1]
-				route.ConfigPackageName = packageMatch[1]
+			if scan.PackageName != "" {
+				route.PackageName = scan.PackageName
+				route.ConfigPackageName = scan.PackageName
 				relPath, err := filepath.Rel("src", filepath.Dir(path))
 				if err != nil {
 					return fmt.Errorf("failed to get relative import path for %s: %w", path, err)
@@ -502,17 +491,15 @@ func (helper *FileBasedRouteHelper) collectComponentsInfo(goModName string) erro
 				helper.TemplateInfo.Imports = append(helper.TemplateInfo.Imports, importStruct)
 			}
 
-			configMatch := helper.RouteConfigNameRegex.FindStringSubmatch(string(content))
-			if len(configMatch) > 1 {
-				route.ConfigName = configMatch[1]
+			if scan.RouteConfigName != "" {
+				route.ConfigName = scan.RouteConfigName
 			} else {
 				route.ConfigName = "DefaultConfig"
 				route.ConfigPackageName = "routes"
 			}
 
-			funcMatch := helper.RouteFuncNameRegex.FindStringSubmatch(string(content))
-			if len(funcMatch) > 1 {
-				route.FunctionName = funcMatch[1]
+			if scan.RouteFuncName != "" {
+				route.FunctionName = scan.RouteFuncName
 			}
 
 			route.HttpPath = helper.normalizeHttpPath(path)
@@ -538,15 +525,15 @@ func (helper *FileBasedRouteHelper) collectPageInfo(goModName string) error {
 			route.OriginFile = path
 			route.ConfigName = "DefaultConfig"
 			route.ConfigPackageName = "routes"
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("failed to read file %s: %w", path, err)
+
+			scan, scanErr := astScanFile(path)
+			if scanErr != nil {
+				return nil
 			}
 
-			packageMatch := helper.PackageRegex.FindStringSubmatch(string(content))
-			if len(packageMatch) > 1 {
-				route.PackageName = packageMatch[1]
-				route.ConfigPackageName = packageMatch[1]
+			if scan.PackageName != "" {
+				route.PackageName = scan.PackageName
+				route.ConfigPackageName = scan.PackageName
 				relPath, err := filepath.Rel("src", filepath.Dir(path))
 				if err != nil {
 					return fmt.Errorf("failed to get relative import path for %s: %w", path, err)
@@ -558,17 +545,15 @@ func (helper *FileBasedRouteHelper) collectPageInfo(goModName string) error {
 				helper.TemplateInfo.Imports = append(helper.TemplateInfo.Imports, importStruct)
 			}
 
-			configMatch := helper.RouteConfigNameRegex.FindStringSubmatch(string(content))
-			if len(configMatch) > 1 {
-				route.ConfigName = configMatch[1]
+			if scan.RouteConfigName != "" {
+				route.ConfigName = scan.RouteConfigName
 			} else {
 				route.ConfigName = "DefaultConfig"
 				route.ConfigPackageName = "routes"
 			}
 
-			funcMatch := helper.RouteFuncNameRegex.FindStringSubmatch(string(content))
-			if len(funcMatch) > 1 {
-				route.FunctionName = funcMatch[1]
+			if scan.RouteFuncName != "" {
+				route.FunctionName = scan.RouteFuncName
 			}
 
 			route.HttpPath = helper.normalizeHttpPath(path)

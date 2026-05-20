@@ -293,15 +293,15 @@ func (command *HotReloadCommand) rebuild() {
 func (command *HotReloadCommand) buildWasmAll() {
 	pages, err := command.cli.Wasm.ScanPages("src/pages", "src/components")
 	if err != nil {
-		log.Printf("wasm: scan failed: %v", err)
+		wasmErrorf("scan failed: %v", err)
 		return
 	}
 	if len(pages) == 0 {
 		return
 	}
-	log.Printf("wasm: building %d page(s)...", len(pages))
+	wasmLogf("building %d page(s)...", len(pages))
 	if err := command.cli.Wasm.GenerateAll(pages, "public/wasm"); err != nil {
-		log.Printf("wasm: build failed (continuing with stale binaries): %v", err)
+		wasmErrorf("build failed (continuing with stale binaries): %v", err)
 	}
 }
 

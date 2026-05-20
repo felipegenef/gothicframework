@@ -10,6 +10,38 @@ They compile as no-ops server-side and as the real reactive TinyGo implementatio
 
 ---
 
+## Helper functions and tree-shaking
+
+Any same-package function, constant, or type referenced (directly or transitively) inside `ClientSideState` is automatically inlined into the generated WASM binary. You do not need to copy helpers manually.
+
+```go
+func clamp(v, lo, hi int) int {
+    if v < lo { return lo }
+    if v > hi { return hi }
+    return v
+}
+
+var CounterConfig = routes.RouteConfig[CounterProps]{
+    ClientSideState: func() {
+        count := CreateObservable(0)
+        Observe(func() {
+            SetText("display", strconv.Itoa(clamp(count.Get(), 0, 100)))
+        }, count)
+        CreateWasmFunc("inc", func() { count.Set(count.Get() + 1) })
+    },
+}
+```
+
+`clamp` is tree-shaken into the WASM main automatically.
+
+**Rules:**
+- Only `func`, `const`, and `type` declarations can be tree-shaken. Package-level `var` references produce a build error with a `file:line:col` position.
+- Tree-shaking is recursive — if `clamp` calls another same-package helper, that helper is pulled in too.
+- Imports used by pulled helpers are included automatically.
+- `init()` functions cannot be referenced and will produce a build error.
+
+---
+
 ## State
 
 ### `CreateObservable[T any](initial T) *Observable[T]`
@@ -130,7 +162,7 @@ The proxy relies on `window.event` being set, which is true for all user-trigger
 
 ### Why stateful components must lazy-load
 
-Every component with a `ClientSideState` function gets its own `.wasm.gz` file and its own bootstrap `<script>` tag. The script sets `window.__gothicCurrentModule` immediately before `go.run()` so the module captures the right namespace.
+Every component with a `ClientSideState` function gets its own `.wasm.gz` / `.wasm.br` file (depending on the `WasmCompression` setting) and its own bootstrap `<script>` tag. The script sets `window.__gothicCurrentModule` immediately before `go.run()` so the module captures the right namespace.
 
 This only works if **each WASM module starts after its scope element is already in the DOM**. If stateful components are inlined in the initial SSR output, all their `<script>` tags fire in parallel. `window.__gothicCurrentModule` gets overwritten by whichever `fetch` resolves last — every module that loaded after the first one captures the wrong namespace.
 
@@ -279,19 +311,31 @@ Context lets multiple WASM components share reactive state without prop drilling
 1. Create `src/context/page_context.go` (or any name) with a struct embedding `GothicSharedContext`:
 
    ```go
-   package context
+   package gothicwasm // any package name works — match what's in your src/context/ files
 
    import . "github.com/felipegenef/gothicframework/pkg/wasm"
 
    type Page struct {
-       GothicSharedContext
-       Pings int    `gothic:"page-pings"`
-       Label string `gothic:"page-label"`
-       Theme string `gothic:"page-theme"`
+       GothicSharedContext `name:"page" compression:"brotli"`
+       Pings int
+       Label string
+       Theme string
    }
    ```
 
-   The `gothic:` tag on each field sets the key name; without it the CLI uses the field name.
+   The `name:` tag on `GothicSharedContext` sets the context key used in JS events (e.g. `gothic:context:page:Theme`). The optional `compression:` tag selects `brotli` or `gzip` for the manager WASM binary (default: `gzip`).
+
+   The `gothic:` tag on individual fields is an **encoding override** for `int`/`uint` fields where Go's default `int` (platform-width) needs an explicit wire size:
+
+   | Tag | Wire type | Use when |
+   |-----|-----------|----------|
+   | `gothic:"i32"` | signed 32-bit | `int` field, want 32-bit wire |
+   | `gothic:"i64"` | signed 64-bit | `int` field, want 64-bit wire |
+   | `gothic:"u32"` | unsigned 32-bit | `uint` field, want 32-bit wire |
+   | `gothic:"u64"` | unsigned 64-bit | `uint` field, want 64-bit wire |
+   | `gothic:"skip"` | (omitted) | exclude field from wire format |
+
+   Without a `gothic:` tag the CLI infers the codec from the field's Go type.
 
 2. In any `ClientSideState`, call the auto-generated `PageContext()` constructor (the name is `<StructName>Context`):
 
@@ -327,12 +371,12 @@ src/pages/home/home.go           ← 4. mount the manager
 **Step 1 — define the shared struct** in `src/context/`:
 
 ```go
-package context
+package gothicwasm // any package name works
 
 import . "github.com/felipegenef/gothicframework/pkg/wasm"
 
 type App struct {
-    GothicSharedContext
+    GothicSharedContext `name:"app"`
     Count int
     Theme string
     Label string
@@ -413,14 +457,6 @@ For one-off primitive shares without defining a struct, the runtime exposes type
 | `UintKey(name)`, `Uint8/16/32/64Key(name)` | unsigned-int families |
 | `Float32Key(name)` / `Float64Key(name)` | `ContextKey[float32/64]` |
 | `RuneKey(name)` (= int32) / `ByteKey(name)` (= uint8) | aliases |
-
-**JSON** — structs, slices, maps — serialized as JSON:
-
-| Factory | Type |
-|---------|------|
-| `JsonKey[T any](name)` | `ContextKey[T]` |
-
-`T` must be JSON-serializable. `encoding/json` is imported unconditionally by the runtime package, so the binary size cost is present for any app that uses the context system regardless of whether you call `JsonKey` directly.
 
 **Binary** — bespoke codec, smallest payload:
 
@@ -784,7 +820,7 @@ Each Gothic WASM module runs inside the browser as a 32-bit WebAssembly binary. 
 
 Go's GC reclaims allocations between broadcasts, so the **live set** stays flat. But the underlying WASM linear memory is **never returned to the host** — pages are committed on demand and held forever. Chrome reports this committed memory as process RSS. After enough large broadcasts the high-water mark approaches 4 GB and the Go allocator starts failing, causing a WASM `unreachable` trap.
 
-### The broadcast pipeline (v2.16.0 — per-field)
+### The broadcast pipeline (per-field)
 
 Every call to `ctx.Set(largeStruct)` triggers this pipeline:
 
@@ -880,12 +916,10 @@ The `unreachable` trap is the dramatic end-state; the subtler version — Chrome
 
 ---
 
-## Per-field context architecture (v2.16.0)
+## Per-field context architecture
 
-The v2.16.0 branch implements Solution 4 from the architectural analysis above
-("Per-field subscriptions") and combines it with two further refinements that
-turned out to be load-bearing for stress workloads. This section documents the
-final shipped behaviour.
+Gothic uses per-field subscriptions combined with two further refinements that
+are load-bearing for stress workloads. This section documents the shipped behaviour.
 
 ### The context manager WASM is the sole writer
 

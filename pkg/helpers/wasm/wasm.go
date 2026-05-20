@@ -4,6 +4,7 @@ import (
 	"runtime"
 
 	helpers "github.com/felipegenef/gothicframework/pkg/helpers"
+	"github.com/felipegenef/gothicframework/pkg/helpers/wasm/astx"
 )
 
 const tinyGoVersion = "0.41.1"
@@ -17,6 +18,7 @@ type WasmHelper struct {
 	Version        string
 	ConfigOverride string
 	cache          *wasmCache
+	astLoader      *astx.Loader
 }
 
 // WasmCompression is the compression algorithm for compiled WASM output.
@@ -34,6 +36,7 @@ type WasmPage struct {
 	FuncName    string
 	FuncBody    string
 	Imports     []string
+	Helpers     []string
 	HttpPath    string
 	OutputName  string
 	Compression WasmCompression
