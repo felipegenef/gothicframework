@@ -377,6 +377,28 @@ CreateWasmFunc("search", func() {
 
 ---
 
+### `FetchBytes(url string, config ...FetchConfig) ([]byte, error)`
+
+Same as `Fetch` but returns the raw response body as `[]byte` instead of a string. Use this when the server returns binary data (images, files, compressed payloads) that would be corrupted by text decoding.
+
+```go
+CreateWasmFunc("downloadFile", func() {
+    data, err := FetchBytes("/api/downloadTxt")
+    if err != nil {
+        SetText("result", "error: "+err.Error())
+        return
+    }
+    // data is []byte — convert to string for text, or process as binary
+    SetText("result", string(data))
+})
+```
+
+Accepts the same `FetchConfig` options as `Fetch` (method, headers, body, query params).
+
+**Note:** Internally uses `arrayBuffer()` instead of `text()` on the JS `Response` object, which preserves every byte without any encoding conversion.
+
+---
+
 ### `GetFileBytes(id string) []byte`
 
 Reads the contents of the first file selected in a `<input type="file">` element and returns it as `[]byte`. Blocks until the browser's `FileReader` finishes. Returns `nil` if the element is not found, no file is selected, or reading fails.
