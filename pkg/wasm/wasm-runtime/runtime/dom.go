@@ -3,6 +3,7 @@
 package runtime
 
 import (
+	"errors"
 	"strings"
 	"syscall/js"
 )
@@ -120,6 +121,51 @@ func GetValue(id string) string {
 	return el.Get("value").String()
 }
 
+// GetFileBytes reads the contents of the first selected file from a <input type="file"> element.
+// Blocks until the FileReader completes. Returns nil on error or if no file is selected.
+func GetFileBytes(id string) []byte {
+	el := queryByIdInScope(id)
+	if el.IsNull() || el.IsUndefined() {
+		return nil
+	}
+	files := el.Get("files")
+	if files.IsNull() || files.IsUndefined() || files.Get("length").Int() == 0 {
+		return nil
+	}
+	file := files.Index(0)
+
+	type result struct {
+		data []byte
+		ok   bool
+	}
+	ch := make(chan result, 1)
+
+	reader := js.Global().Get("FileReader").New()
+
+	onLoad := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		arrayBuffer := reader.Get("result")
+		uint8Array := js.Global().Get("Uint8Array").New(arrayBuffer)
+		data := make([]byte, uint8Array.Get("length").Int())
+		js.CopyBytesToGo(data, uint8Array)
+		ch <- result{data: data, ok: true}
+		return nil
+	})
+	onError := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		ch <- result{ok: false}
+		return nil
+	})
+
+	reader.Set("onload", onLoad)
+	reader.Set("onerror", onError)
+	reader.Call("readAsArrayBuffer", file)
+
+	r := <-ch
+	if !r.ok {
+		return nil
+	}
+	return r.data
+}
+
 func AddClass(id, className string) {
 	el := queryByIdInScope(id)
 	if el.IsNull() || el.IsUndefined() {
@@ -158,4 +204,162 @@ func SetStyle(id, property, value string) {
 		return
 	}
 	el.Get("style").Set(property, value)
+}
+
+// FetchConfig configures an HTTP request made via Fetch.
+type FetchConfig struct {
+	Method    string
+	Headers   map[string]string
+	Body      string
+	BodyBytes []byte
+	Query     map[string]string
+}
+
+// Fetch makes an HTTP request using the browser's fetch API and blocks until complete.
+func Fetch(url string, config ...FetchConfig) (string, error) {
+	var cfg FetchConfig
+	if len(config) > 0 {
+		cfg = config[0]
+	}
+	if cfg.Method == "" {
+		cfg.Method = "GET"
+	}
+
+	// Build URL with query parameters
+	if len(cfg.Query) > 0 {
+		sep := "?"
+		if strings.Contains(url, "?") {
+			sep = "&"
+		}
+		for k, v := range cfg.Query {
+			url += sep + js.Global().Get("encodeURIComponent").Invoke(k).String() +
+				"=" + js.Global().Get("encodeURIComponent").Invoke(v).String()
+			sep = "&"
+		}
+	}
+
+	// Build fetch init object
+	init := js.Global().Get("Object").New()
+	init.Set("method", cfg.Method)
+
+	if len(cfg.Headers) > 0 {
+		headers := js.Global().Get("Object").New()
+		for k, v := range cfg.Headers {
+			headers.Set(k, v)
+		}
+		init.Set("headers", headers)
+	}
+
+	if cfg.Body != "" {
+		init.Set("body", cfg.Body)
+	} else if len(cfg.BodyBytes) > 0 {
+		uint8Array := js.Global().Get("Uint8Array").New(len(cfg.BodyBytes))
+		js.CopyBytesToJS(uint8Array, cfg.BodyBytes)
+		init.Set("body", uint8Array)
+	}
+
+	type result struct {
+		body string
+		err  error
+	}
+	ch := make(chan result, 1)
+
+	thenFn := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		resp := args[0]
+		textThen := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			ch <- result{body: args[0].String()}
+			return nil
+		})
+		textCatch := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			ch <- result{err: errors.New(args[0].String())}
+			return nil
+		})
+		resp.Call("text").Call("then", textThen).Call("catch", textCatch)
+		return nil
+	})
+	catchFn := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		ch <- result{err: errors.New(args[0].String())}
+		return nil
+	})
+
+	js.Global().Call("fetch", url, init).Call("then", thenFn).Call("catch", catchFn)
+
+	r := <-ch
+	return r.body, r.err
+}
+
+// FetchBytes makes an HTTP request and returns the response as raw bytes.
+// Use for binary responses (images, PDFs, ZIPs) where Fetch's text() decoding would corrupt data.
+func FetchBytes(url string, config ...FetchConfig) ([]byte, error) {
+	var cfg FetchConfig
+	if len(config) > 0 {
+		cfg = config[0]
+	}
+	if cfg.Method == "" {
+		cfg.Method = "GET"
+	}
+
+	// Build URL with query parameters (identical to Fetch)
+	if len(cfg.Query) > 0 {
+		sep := "?"
+		if strings.Contains(url, "?") {
+			sep = "&"
+		}
+		for k, v := range cfg.Query {
+			url += sep + js.Global().Get("encodeURIComponent").Invoke(k).String() +
+				"=" + js.Global().Get("encodeURIComponent").Invoke(v).String()
+			sep = "&"
+		}
+	}
+
+	// Build fetch init object (identical to Fetch)
+	init := js.Global().Get("Object").New()
+	init.Set("method", cfg.Method)
+	if len(cfg.Headers) > 0 {
+		headers := js.Global().Get("Object").New()
+		for k, v := range cfg.Headers {
+			headers.Set(k, v)
+		}
+		init.Set("headers", headers)
+	}
+	if cfg.Body != "" {
+		init.Set("body", cfg.Body)
+	} else if len(cfg.BodyBytes) > 0 {
+		uint8Array := js.Global().Get("Uint8Array").New(len(cfg.BodyBytes))
+		js.CopyBytesToJS(uint8Array, cfg.BodyBytes)
+		init.Set("body", uint8Array)
+	}
+
+	type result struct {
+		data []byte
+		err  error
+	}
+	ch := make(chan result, 1)
+
+	thenFn := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		resp := args[0]
+		// Use arrayBuffer() instead of text() to avoid UTF-8 corruption
+		bufThen := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			uint8Array := js.Global().Get("Uint8Array").New(args[0])
+			data := make([]byte, uint8Array.Get("length").Int())
+			js.CopyBytesToGo(data, uint8Array)
+			ch <- result{data: data}
+			return nil
+		})
+		bufCatch := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			ch <- result{err: errors.New(args[0].String())}
+			return nil
+		})
+		resp.Call("arrayBuffer").Call("then", bufThen).Call("catch", bufCatch)
+		return nil
+	})
+	catchFn := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		ch <- result{err: errors.New(args[0].String())}
+		return nil
+	})
+
+	js.Global().Call("fetch", url, init).Call("then", thenFn).Call("catch", catchFn)
+
+	r := <-ch
+	return r.data, r.err
 }

@@ -1,0 +1,10 @@
+// === Wrap ===
+// ENCODE Child:
+_encode_MyStruct(v.Child, e)
+// DECODE Child:
+v.Child = _decode_MyStruct(d)
+// === MyStruct ===
+// ENCODE V:
+e.I64(int64(v.V))
+// DECODE V:
+v.V = int(d.I64())

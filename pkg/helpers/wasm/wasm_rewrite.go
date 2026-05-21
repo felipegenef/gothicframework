@@ -6,9 +6,8 @@ import (
 	"go/ast"
 	"go/format"
 	"go/parser"
+	"go/scanner"
 	"go/token"
-	"log"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,41 +19,23 @@ import (
 //  1. rewriteAutoKeys — `AutoKey[T]("name")` → `BinaryKey[T]("name", _encode_T, _decode_T)`.
 //  2. rewriteContextCalls — `UseContext(MyKey, MyCtx{...})` → `MyContext(MyCtx{...})`.
 //
-// The preferred implementation is AST-based (handles arbitrary whitespace,
-// multi-line calls, nested generic type arguments like `map[string]int`).
-// The regex implementations remain as fallbacks for source snippets the Go
-// parser cannot consume.
-
-var autoKeyRe = regexp.MustCompile(`AutoKey\[(\[\][\w]+|[\w]+)\]\("([^"]+)"\)`)
+// The implementation is AST-based (handles arbitrary whitespace, multi-line
+// calls, nested generic type arguments like `map[string]int`). Parse failures
+// surface as hard errors with file:line:col position info so callers can
+// abort the build.
 
 // rewriteAutoKeys rewrites every `AutoKey[T]("name")` call inside src to the
 // equivalent `BinaryKey[T]("name", _encode_T, _decode_T)` call. The input is
 // a slice of top-level declarations stripped of the `package` line and the
-// `import` block (see collectContextSnippets). When AST parsing succeeds we
-// use it; otherwise we fall back to the legacy regex rewriter and log a
-// warning to stderr.
-func (h *WasmHelper) rewriteAutoKeys(src string) string {
-	if out, ok := astRewriteAutoKeys(src); ok {
-		return out
-	}
-	log.Printf("wasm: rewriteAutoKeys: AST parse failed, falling back to regex")
-	return h.legacyAutoKeyRewriter(src)
-}
-
-// legacyAutoKeyRewriter is the original regex-based implementation. Kept as a
-// fallback for source fragments the Go parser cannot consume on its own.
-func (h *WasmHelper) legacyAutoKeyRewriter(src string) string {
-	return autoKeyRe.ReplaceAllStringFunc(src, func(match string) string {
-		m := autoKeyRe.FindStringSubmatch(match)
-		typ, name := m[1], m[2]
-		encFn, decFn := autoKeyHelperNames(typ)
-		return fmt.Sprintf(`BinaryKey[%s]("%s", %s, %s)`, typ, name, encFn, decFn)
-	})
+// `import` block (see collectContextSnippets). Returns an error with
+// positional info on AST parse failure — callers must abort.
+func (h *WasmHelper) rewriteAutoKeys(src string) (string, error) {
+	return astRewriteAutoKeys(src)
 }
 
 // astRewriteAutoKeys rewrites every AutoKey[T]("name") call inside src using
-// the Go AST. Returns (rewritten source, true) on success; ("", false) when
-// the source cannot be parsed (caller should fall back to regex).
+// the Go AST. Returns (rewritten source, nil) on success; ("", error) when
+// the source cannot be parsed. The error carries file:line:col position info.
 //
 // In production the source is a fragment of top-level declarations (no
 // package clause, no imports). For unit-test convenience we also accept bare
@@ -62,19 +43,22 @@ func (h *WasmHelper) legacyAutoKeyRewriter(src string) string {
 // top-level parse fails. Position information from the AST is used to
 // perform surgical text replacements, which preserves the surrounding
 // formatting (comments, whitespace).
-func astRewriteAutoKeys(src string) (string, bool) {
+func astRewriteAutoKeys(src string) (string, error) {
 	const topWrap = "package _x\n"
 	fset := token.NewFileSet()
 	wrapper := topWrap
 	file, err := parser.ParseFile(fset, "", wrapper+src, parser.ParseComments)
 	if err != nil {
 		// Retry as a function body — handles bare expressions/statements.
-		fset = token.NewFileSet()
-		wrapper = "package _x\nfunc _f() {\n"
-		file, err = parser.ParseFile(fset, "", wrapper+src+"\n}\n", parser.ParseComments)
-		if err != nil {
-			return "", false
+		fset2 := token.NewFileSet()
+		wrapper2 := "package _x\nfunc _f() {\n"
+		file2, err2 := parser.ParseFile(fset2, "", wrapper2+src+"\n}\n", parser.ParseComments)
+		if err2 != nil {
+			return "", firstPositionedError(err, len(wrapper), err2, len(wrapper2))
 		}
+		fset = fset2
+		wrapper = wrapper2
+		file = file2
 	}
 
 	type edit struct {
@@ -144,7 +128,7 @@ func astRewriteAutoKeys(src string) (string, bool) {
 	})
 
 	if len(edits) == 0 {
-		return src, true
+		return src, nil
 	}
 
 	// Apply edits in reverse offset order so earlier edits' offsets stay valid.
@@ -153,7 +137,26 @@ func astRewriteAutoKeys(src string) (string, bool) {
 	for _, e := range edits {
 		out = out[:e.start] + e.repl + out[e.end:]
 	}
-	return out, true
+	return out, nil
+}
+
+// firstPositionedError extracts the first parser/scanner error from one of two
+// candidate parse failures (the top-level retry and the func-body retry) and
+// returns a positioned error string. The wrapperLen is subtracted from line
+// offsets so positions refer to the caller's original src when possible.
+func firstPositionedError(err1 error, _ int, err2 error, _ int) error {
+	pick := err1
+	if pick == nil {
+		pick = err2
+	}
+	if pick == nil {
+		return fmt.Errorf("ast parse failed")
+	}
+	if list, ok := pick.(scanner.ErrorList); ok && len(list) > 0 {
+		e := list[0]
+		return fmt.Errorf("%s: %s", e.Pos.String(), e.Msg)
+	}
+	return pick
 }
 
 // autoKeyHelperNames returns the encode/decode helper names that match the
@@ -201,35 +204,15 @@ func normalizeTypeIdent(s string) string {
 //	Use<Name>(<Name>{...})              → <Name>Context(<Name>{...})
 //	Use<Name>Context(<Name>{...})       → <Name>Context(<Name>{...})
 //
-// On AST-parse failure we fall back to the legacy strings.ReplaceAll path.
-func (h *WasmHelper) rewriteContextCalls(src string, structs []structInfo) string {
-	if out, ok := astRewriteContextCalls(src, structs); ok {
-		return out
-	}
-	log.Printf("wasm: rewriteContextCalls: AST parse failed, falling back to strings.ReplaceAll")
-	return h.legacyContextCallRewriter(src, structs)
-}
-
-// legacyContextCallRewriter is the original strings.ReplaceAll-based
-// implementation, retained as a fallback when the AST path cannot parse.
-func (h *WasmHelper) legacyContextCallRewriter(src string, structs []structInfo) string {
-	for _, s := range structs {
-		if s.KeyName == "" {
-			continue
-		}
-		ctor := h.ctxFuncName(s.Name)
-		src = strings.ReplaceAll(src, "UseContext("+s.Name+"Key, "+s.Name, ctor+"("+s.Name)
-		src = strings.ReplaceAll(src, "UseContext("+s.Name, ctor+"("+s.Name)
-		src = strings.ReplaceAll(src, "Use"+s.Name+"("+s.Name, ctor+"("+s.Name)
-		src = strings.ReplaceAll(src, "Use"+s.Name+"Context("+s.Name, ctor+"("+s.Name)
-	}
-	return src
+// On AST-parse failure we return a positioned error so the caller can abort.
+func (h *WasmHelper) rewriteContextCalls(src string, structs []structInfo) (string, error) {
+	return astRewriteContextCalls(src, structs)
 }
 
 // astRewriteContextCalls rewrites the four legacy "use context" spellings into
 // the canonical `<Name>Context(...)` call using the Go AST. Returns the
-// rewritten source plus true on success; ("", false) when parsing fails.
-func astRewriteContextCalls(src string, structs []structInfo) (string, bool) {
+// rewritten source plus nil on success; ("", error) when parsing fails.
+func astRewriteContextCalls(src string, structs []structInfo) (string, error) {
 	// Build a lookup of valid struct names → ctor name. Only structs with a
 	// non-empty KeyName participate.
 	ctorFor := make(map[string]string, len(structs))
@@ -240,7 +223,7 @@ func astRewriteContextCalls(src string, structs []structInfo) (string, bool) {
 		ctorFor[s.Name] = s.Name + "Context"
 	}
 	if len(ctorFor) == 0 {
-		return src, true
+		return src, nil
 	}
 
 	const prefix = "package _x\nfunc _f() {\n"
@@ -249,7 +232,11 @@ func astRewriteContextCalls(src string, structs []structInfo) (string, bool) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", wrapped, parser.ParseComments)
 	if err != nil {
-		return "", false
+		if list, ok := err.(scanner.ErrorList); ok && len(list) > 0 {
+			e := list[0]
+			return "", fmt.Errorf("%s: %s", e.Pos.String(), e.Msg)
+		}
+		return "", err
 	}
 
 	type edit struct {
@@ -377,12 +364,12 @@ func astRewriteContextCalls(src string, structs []structInfo) (string, bool) {
 	})
 
 	if len(edits) == 0 {
-		return src, true
+		return src, nil
 	}
 	sort.Slice(edits, func(i, j int) bool { return edits[i].start > edits[j].start })
 	out := src
 	for _, e := range edits {
 		out = out[:e.start] + e.repl + out[e.end:]
 	}
-	return out, true
+	return out, nil
 }

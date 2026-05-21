@@ -640,7 +640,7 @@ func (helper *FileBasedRouteHelper) normalizeHttpPath(path string) string {
 
 	// Convert var_param__ to {param} ONLY for HTTP routes
 	if isHttpRoute {
-		re := regexp.MustCompile(`var_([a-zA-Z0-9_]+)`)
+		re := regexp.MustCompile(`\bvar_([a-zA-Z_][a-zA-Z0-9_]*)\b`)
 		path = re.ReplaceAllString(path, `{$1}`)
 	}
 

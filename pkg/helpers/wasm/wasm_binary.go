@@ -1,6 +1,8 @@
 package helpers
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -250,8 +252,9 @@ func (h *WasmHelper) fetchExpectedChecksum(checksumURL, filename string) (string
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
+	sc := bufio.NewScanner(bytes.NewReader(body))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -263,6 +266,9 @@ func (h *WasmHelper) fetchExpectedChecksum(checksumURL, filename string) (string
 		if name == filename {
 			return fields[0], nil
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", fmt.Errorf("scan checksums: %w", err)
 	}
 	return "", fmt.Errorf("checksum not found for %q", filename)
 }

@@ -1,3 +1,16 @@
+# WASM Runtime — `pkg/helpers/wasm`
+
+This package is the **server-side code-generation engine** for Gothic's WASM feature. It lives inside the CLI (`gothic-cli`) and is never imported by user code directly.
+
+When you run `gothicframework wasm`, this package:
+1. Parses your `.templ` files with the Go AST to extract `ClientSideState` functions and their referenced types.
+2. Generates a typed codec (encode/decode) for every struct used as WASM context state.
+3. Rewrites the WASM entry point source and compiles it with TinyGo (`-gc conservative -target wasm`).
+
+The **user-facing API** (what you actually call inside `ClientSideState`) lives in `pkg/wasm` and is documented below. That package exposes no-op stubs for server-side compilation and the real TinyGo implementations for the WASM binary.
+
+---
+
 # WASM Hooks Reference
 
 All hooks are available via the dot import in any `ClientSideState` function:
@@ -302,6 +315,139 @@ SetStyle("preview-swatch", "backgroundColor", hex.Get())
 
 ---
 
+## HTTP
+
+### `Fetch(url string, config ...FetchConfig) (string, error)`
+
+Makes an HTTP request using the browser's `fetch` API and blocks until complete. Returns the response body as a string, or an error if the request or response reading fails.
+
+Config is optional — omit it for a simple GET.
+
+Must be called from inside a goroutine or `CreateWasmFunc` handler (not at the top level of `ClientSideState`).
+
+```go
+// Simple GET
+CreateWasmFunc("load", func() {
+    body, err := Fetch("https://api.example.com/todos/1")
+    if err != nil {
+        fmt.Println("error:", err)
+        return
+    }
+    SetText("result", body)
+})
+
+// POST with JSON body and headers
+CreateWasmFunc("submit", func() {
+    body, err := Fetch("https://api.example.com/todos", FetchConfig{
+        Method:  "POST",
+        Headers: map[string]string{"Content-Type": "application/json"},
+        Body:    `{"title":"buy milk","completed":false}`,
+    })
+    if err != nil {
+        fmt.Println("error:", err)
+        return
+    }
+    SetText("result", body)
+})
+
+// GET with query parameters
+CreateWasmFunc("search", func() {
+    body, err := Fetch("https://api.example.com/todos", FetchConfig{
+        Query: map[string]string{"userId": "1", "completed": "false"},
+    })
+    if err != nil {
+        fmt.Println("error:", err)
+        return
+    }
+    SetText("result", body)
+})
+```
+
+**`FetchConfig` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `Method` | `string` | `"GET"` | HTTP method: `"GET"`, `"POST"`, `"PUT"`, `"DELETE"`, etc. |
+| `Headers` | `map[string]string` | `nil` | Request headers. |
+| `Body` | `string` | `""` | Text request body — use for JSON or form data. |
+| `BodyBytes` | `[]byte` | `nil` | Binary request body — used when `Body` is empty. Use for file uploads or raw binary payloads. |
+| `Query` | `map[string]string` | `nil` | Query parameters appended to the URL (`?key=value&...`). Values are URL-encoded automatically. |
+
+**Note:** `Fetch` is subject to the browser's CORS policy — cross-origin requests require the server to include appropriate `Access-Control-Allow-Origin` headers.
+
+---
+
+### `GetFileBytes(id string) []byte`
+
+Reads the contents of the first file selected in a `<input type="file">` element and returns it as `[]byte`. Blocks until the browser's `FileReader` finishes. Returns `nil` if the element is not found, no file is selected, or reading fails.
+
+```go
+// HTML
+// <input type="file" id="upload" />
+// <button onclick="uploadFile()">Upload</button>
+
+CreateWasmFunc("uploadFile", func() {
+    data := GetFileBytes("upload")
+    if data == nil {
+        SetText("status", "no file selected")
+        return
+    }
+
+    // Send the whole file as a binary body
+    _, err := Fetch("https://api.example.com/upload", FetchConfig{
+        Method:    "POST",
+        Headers:   map[string]string{"Content-Type": "application/octet-stream"},
+        BodyBytes: data,
+    })
+    if err != nil {
+        SetText("status", "upload failed: "+err.Error())
+        return
+    }
+    SetText("status", "uploaded!")
+})
+```
+
+**Chunked upload example** — split the file and send each chunk with a `Content-Range` header:
+
+```go
+CreateWasmFunc("uploadChunked", func() {
+    data := GetFileBytes("upload")
+    if data == nil {
+        return
+    }
+
+    const chunkSize = 512 * 1024 // 512 KB per chunk
+    total := len(data)
+
+    for start := 0; start < total; start += chunkSize {
+        end := start + chunkSize
+        if end > total {
+            end = total
+        }
+        chunk := data[start:end]
+
+        contentRange := fmt.Sprintf("bytes %d-%d/%d", start, end-1, total)
+        _, err := Fetch("https://api.example.com/upload", FetchConfig{
+            Method:    "POST",
+            Headers:   map[string]string{
+                "Content-Type":  "application/octet-stream",
+                "Content-Range": contentRange,
+            },
+            BodyBytes: chunk,
+        })
+        if err != nil {
+            SetText("status", fmt.Sprintf("chunk %d failed: %s", start, err.Error()))
+            return
+        }
+        pct := end * 100 / total
+        SetText("status", fmt.Sprintf("uploading... %d%%", pct))
+    }
+    SetText("status", "done!")
+})
+```
+
+---
+
 ## Context
 
 Context lets multiple WASM components share reactive state without prop drilling. Because each component is a separate WASM module with its own Go heap, values are serialized through a JavaScript store (`window.__gothic_context`) and broadcast via `CustomEvent`. The current API uses a generated context constructor per shared struct — define the struct once in `src/context/` and the CLI generates a `<Struct>Context()` factory that handles encoding, decoding, broadcast, and subscription.
@@ -324,6 +470,20 @@ Context lets multiple WASM components share reactive state without prop drilling
    ```
 
    The `name:` tag on `GothicSharedContext` sets the context key used in JS events (e.g. `gothic:context:page:Theme`). The optional `compression:` tag selects `brotli` or `gzip` for the manager WASM binary (default: `gzip`).
+
+   **Supported field types:**
+
+   | Category | Examples |
+   |----------|---------|
+   | Primitives | `bool`, `int`, `int8/16/32/64`, `uint`, `uint8/16/32/64`, `float32/64`, `string`, `byte`, `[]byte` |
+   | Type aliases | `type MyScore int`, `type Flag bool` — resolved automatically |
+   | Slices | `[]string`, `[]Item`, `[]*Item`, `[][]string` |
+   | Maps | `map[string]int`, `map[string]Item`, `map[string]*Item`, `map[string]map[string]int` |
+   | Pointers | `*string`, `*Item` |
+   | Nested structs | `Item` (value), `*Item` (pointer) |
+   | Time | `time.Time` |
+
+   Nested maps (`map[K]map[K2]V`) are supported as long as the innermost value is a primitive, type alias, or known struct. Three or more levels of map nesting are not supported and will produce a build-time error.
 
    The `gothic:` tag on individual fields is an **encoding override** for `int`/`uint` fields where Go's default `int` (platform-width) needs an explicit wire size:
 

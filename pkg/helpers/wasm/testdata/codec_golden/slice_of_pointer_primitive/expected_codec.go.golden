@@ -1,0 +1,5 @@
+// === Wrap ===
+// ENCODE Nums:
+{ e.U32(uint32(len(v.Nums))); for _, _item := range v.Nums { if _item == nil { e.U8(0) } else { e.U8(1); _pv := *_item; e.I64(int64(_pv)) } } }
+// DECODE Nums:
+{ _n := int(d.U32()); v.Nums = make([]*int, _n); for _i := range v.Nums { if d.U8() != 0 { var _pv int; _pv = int(d.I64()); v.Nums[_i] = &_pv } } }

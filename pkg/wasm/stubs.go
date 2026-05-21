@@ -74,11 +74,46 @@ func SetText(id, value string)            {}
 func SetHTML(id, html string)             {}
 func SetValue(id, value string)           {}
 func GetValue(id string) string           { return "" }
+
+// GetFileBytes reads the contents of the first file selected in a <input type="file"> element.
+// Returns nil if the element is not found, no file is selected, or reading fails.
+func GetFileBytes(id string) []byte { return nil }
+
 func AddClass(id, className string)       {}
 func RemoveClass(id, className string)    {}
 func ToggleClass(id, className string)    {}
 func SetAttr(id, attr, value string)      {}
 func SetStyle(id, property, value string) {}
+
+// FetchConfig configures an HTTP request made via Fetch.
+type FetchConfig struct {
+	Method    string            // "GET", "POST", "PUT", "DELETE" — default: "GET"
+	Headers   map[string]string // request headers
+	Body      string            // request body (for POST/PUT) — text body
+	BodyBytes []byte            // binary body — used when Body is empty
+	Query     map[string]string // query parameters appended to the URL
+}
+
+// Fetch makes an HTTP request using the browser's fetch API and blocks until complete.
+// Config is optional — omit for a simple GET request.
+// Must be called from inside a goroutine or CreateWasmFunc handler.
+//
+// Example:
+//
+//	body, err := Fetch("https://api.example.com/todos/1")
+//
+//	body, err := Fetch("https://api.example.com/todos", FetchConfig{
+//	    Method:  "POST",
+//	    Headers: map[string]string{"Content-Type": "application/json"},
+//	    Body:    `{"title":"foo"}`,
+//	})
+func Fetch(url string, config ...FetchConfig) (string, error) { return "", nil }
+
+// FetchBytes makes an HTTP request and returns the response as raw bytes.
+// Use this instead of Fetch when the response is binary (images, PDFs, ZIPs, etc.).
+// Config is optional — omit for a simple GET.
+// Must be called from inside a goroutine or CreateWasmFunc handler.
+func FetchBytes(url string, config ...FetchConfig) ([]byte, error) { return nil, nil }
 
 // Event registration — no-ops on the server.
 

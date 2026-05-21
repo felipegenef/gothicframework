@@ -1,0 +1,10 @@
+// === Wrap ===
+// ENCODE Ref:
+{ if v.Ref == nil { e.U8(0) } else { e.U8(1); _encode_MyStruct(*v.Ref, e) } }
+// DECODE Ref:
+{ if d.U8() != 0 { { _sv := _decode_MyStruct(d); v.Ref = &_sv } } }
+// === MyStruct ===
+// ENCODE V:
+e.I64(int64(v.V))
+// DECODE V:
+v.V = int(d.I64())

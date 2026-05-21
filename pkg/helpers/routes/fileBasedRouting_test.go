@@ -71,6 +71,26 @@ func TestNormalizeHttpPath(t *testing.T) {
 			expected: "/api/v1/posts/{postId}",
 		},
 		{
+			name:     "regex anchor: simple var_ prefix",
+			path:     "src/pages/var_foo",
+			expected: "/{foo}",
+		},
+		{
+			name:     "regex anchor: adjacent var_ tokens treated as one identifier",
+			path:     "src/pages/var_foovar_bar",
+			expected: "/{foovar_bar}",
+		},
+		{
+			name:     "regex anchor: identifier starting with digit is not a param",
+			path:     "src/pages/var_0bad",
+			expected: "/var_0bad",
+		},
+		{
+			name:     "regex anchor: no word boundary before var_ means no match",
+			path:     "src/pages/_var_hidden",
+			expected: "/_var_hidden",
+		},
+		{
 			name:     "deeply nested pages",
 			path:     "src/pages/admin/settings/profile_templ.go",
 			expected: "/admin/settings/profile",

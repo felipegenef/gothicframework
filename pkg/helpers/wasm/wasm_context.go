@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/felipegenef/gothicframework/pkg/helpers/wasm/astx"
@@ -23,16 +24,17 @@ const tmplContextGen = ".gothicCli/templates/wasm/context_gen.go"
 // collectContextSnippets reads src/context/*.go, parses struct definitions,
 // generates context_gen.go (server side), and returns inlinable user code
 // snippets and the parsed structs for template rendering.
-func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []structInfo, aliases map[string]string) {
+func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []structInfo, aliases map[string]string, refAliases map[string]typeRef) {
 	entries, err := os.ReadDir("src/context")
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	type rawFile struct{ name, src string }
 	var files []rawFile
 	var allStructs []structInfo
 	allAliases := make(map[string]string)
+	allRefAliases := make(map[string]typeRef)
 	pkgName := "gothicwasm"
 
 	for _, e := range entries {
@@ -49,10 +51,13 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 				pkgName = pf.Name.Name
 			}
 		}
-		structs, aliases := h.parseStructsFromSource(src)
+		structs, aliases, refA := h.parseStructsFromSource(src)
 		allStructs = append(allStructs, structs...)
 		for k, v := range aliases {
 			allAliases[k] = v
+		}
+		for k, v := range refA {
+			allRefAliases[k] = v
 		}
 		files = append(files, rawFile{e.Name(), src})
 	}
@@ -72,7 +77,7 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 		seenKeys[s.KeyName] = s.Name
 	}
 
-	h.writeContextKeyStubs(allStructs, allAliases, pkgName)
+	h.writeContextKeyStubs(allStructs, allAliases, allRefAliases, pkgName)
 
 	for _, f := range files {
 		src, err := astx.StripPackageAndImports(f.src)
@@ -80,22 +85,26 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 			fmt.Fprintf(os.Stderr, "context strip %s: %v\n", f.name, err)
 			os.Exit(1)
 		}
-		src = h.rewriteAutoKeys(src)
+		src, err = h.rewriteAutoKeys(src)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "wasm: rewrite auto-keys %s: %v\n", f.name, err)
+			os.Exit(1)
+		}
 		src = strings.TrimSpace(src)
 		if src != "" {
 			snippets = append(snippets, "// --- from src/context/"+f.name+" ---\n"+src)
 		}
 	}
-	return snippets, allStructs, allAliases
+	return snippets, allStructs, allAliases, allRefAliases
 }
 
-func (h *WasmHelper) writeContextKeyStubs(structs []structInfo, aliases map[string]string, pkgName string) {
+func (h *WasmHelper) writeContextKeyStubs(structs []structInfo, aliases map[string]string, refAliases map[string]typeRef, pkgName string) {
 	if len(structs) == 0 {
 		_ = os.Remove("src/context/context_gen.go")
 		return
 	}
 
-	codecs, err := h.buildCodecData(structs, aliases)
+	codecs, err := h.buildCodecData(structs, aliases, refAliases)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: context codec: %v\n", err)
 		os.Exit(1)
@@ -117,12 +126,13 @@ func (h *WasmHelper) writeContextKeyStubs(structs []structInfo, aliases map[stri
 
 // parseStructsFromSource parses struct definitions and type aliases from a Go source string.
 // typeAliases maps alias name → underlying type string (e.g. "MyInt" → "int").
-func (h *WasmHelper) parseStructsFromSource(src string) (structs []structInfo, typeAliases map[string]string) {
+func (h *WasmHelper) parseStructsFromSource(src string) (structs []structInfo, typeAliases map[string]string, typeRefAliases map[string]typeRef) {
 	typeAliases = make(map[string]string)
+	typeRefAliases = make(map[string]typeRef)
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "", src, parser.ParseComments)
 	if err != nil {
-		return nil, typeAliases
+		return nil, typeAliases, typeRefAliases
 	}
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
@@ -138,37 +148,42 @@ func (h *WasmHelper) parseStructsFromSource(src string) (structs []structInfo, t
 			case *ast.Ident:
 				// type MyInt int  — record the alias
 				typeAliases[ts.Name.Name] = t.Name
+				typeRefAliases[ts.Name.Name] = Named{Name: t.Name}
 			case *ast.ArrayType, *ast.MapType, *ast.StarExpr:
 				// type Labels []string, type MyMap map[K]V, type MyPtr *T
 				if s := h.astTypeString(ts.Type); s != "" {
 					typeAliases[ts.Name.Name] = s
+				}
+				if tref, err := typeRefFromExpr(ts.Type); err == nil {
+					typeRefAliases[ts.Name.Name] = tref
 				}
 				_ = t
 			case *ast.StructType:
 				si := structInfo{Name: ts.Name.Name}
 				for _, field := range t.Fields.List {
 					typ := h.astTypeString(field.Type)
-					tag := ""
+					tref, _ := typeRefFromExpr(field.Type)
+					var tag, nameTag string
+					var compression WasmCompression
 					if field.Tag != nil {
-						tag = h.parseGothicTag(strings.Trim(field.Tag.Value, "`"))
+						tag, nameTag, compression = h.parseFieldTag(field.Tag.Value)
+					} else {
+						compression = WasmCompressionGzip
 					}
 					if len(field.Names) == 0 && typ == "GothicSharedContext" {
-						if field.Tag != nil {
-							raw := strings.Trim(field.Tag.Value, "`")
-							si.KeyName = h.parseNameTag(raw)
-							si.Compression = h.parseCompressionTag(raw)
-						}
+						si.KeyName = nameTag
+						si.Compression = compression
 						continue
 					}
 					for _, name := range field.Names {
-						si.Fields = append(si.Fields, fieldInfo{Name: name.Name, Type: typ, GothicTag: tag})
+						si.Fields = append(si.Fields, fieldInfo{Name: name.Name, Type: typ, TypeRef: tref, GothicTag: tag})
 					}
 				}
 				structs = append(structs, si)
 			}
 		}
 	}
-	return structs, typeAliases
+	return structs, typeAliases, typeRefAliases
 }
 
 func (h *WasmHelper) astTypeString(expr ast.Expr) string {
@@ -190,34 +205,20 @@ func (h *WasmHelper) astTypeString(expr ast.Expr) string {
 	return ""
 }
 
-func (h *WasmHelper) parseGothicTag(tag string) string {
-	for _, part := range strings.Fields(tag) {
-		if strings.HasPrefix(part, `gothic:"`) {
-			return strings.Trim(strings.TrimPrefix(part, "gothic:"), `"`)
-		}
+// parseFieldTag extracts the gothic, name, and compression values from a
+// struct field tag using reflect.StructTag, which correctly handles quoted
+// characters and other edge cases that ad-hoc string splitting would miss.
+// tagValue is the raw tag literal as it appears in the AST (including the
+// surrounding backticks).
+func (h *WasmHelper) parseFieldTag(tagValue string) (gothic, name string, compression WasmCompression) {
+	raw := reflect.StructTag(strings.Trim(tagValue, "`"))
+	gothic, _ = raw.Lookup("gothic")
+	name, _ = raw.Lookup("name")
+	compression = WasmCompressionGzip
+	if c, ok := raw.Lookup("compression"); ok && strings.EqualFold(c, "brotli") {
+		compression = WasmCompressionBrotli
 	}
-	return ""
-}
-
-func (h *WasmHelper) parseNameTag(tag string) string {
-	for _, part := range strings.Fields(tag) {
-		if strings.HasPrefix(part, `name:"`) {
-			return strings.Trim(strings.TrimPrefix(part, "name:"), `"`)
-		}
-	}
-	return ""
-}
-
-func (h *WasmHelper) parseCompressionTag(tag string) WasmCompression {
-	for _, part := range strings.Fields(tag) {
-		if strings.HasPrefix(part, `compression:"`) {
-			val := strings.Trim(strings.TrimPrefix(part, "compression:"), `"`)
-			if strings.EqualFold(val, "brotli") {
-				return WasmCompressionBrotli
-			}
-		}
-	}
-	return WasmCompressionGzip
+	return
 }
 
 func (h *WasmHelper) hasCtxStructs(structs []structInfo) bool {

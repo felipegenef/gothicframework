@@ -6,20 +6,22 @@ import (
 )
 
 func pageStructsFixture() (structInfo, []structInfo) {
+	pings := testFieldInfo("Pings", "int")
+	pings.GothicTag = "i32"
 	page := structInfo{
 		Name:    "Page",
 		KeyName: "page",
 		Fields: []fieldInfo{
-			{Name: "Pings", Type: "int", GothicTag: "i32"},
-			{Name: "Label", Type: "string"},
-			{Name: "Theme", Type: "string"},
-			{Name: "Tests", Type: "[]Test"},
+			pings,
+			testFieldInfo("Label", "string"),
+			testFieldInfo("Theme", "string"),
+			testFieldInfo("Tests", "[]Test"),
 		},
 	}
 	test := structInfo{
 		Name: "Test",
 		Fields: []fieldInfo{
-			{Name: "Value", Type: "int"},
+			testFieldInfo("Value", "int"),
 		},
 	}
 	return page, []structInfo{page, test}
@@ -32,7 +34,7 @@ func TestBuildManagerFieldData_OrderAndShape(t *testing.T) {
 	for _, s := range all {
 		structNames[s.Name] = true
 	}
-	fields, err := h.buildManagerFieldData(page, structNames, map[string]string{})
+	fields, err := h.buildManagerFieldData(page, structNames, map[string]string{}, nil)
 	if err != nil {
 		t.Fatalf("buildManagerFieldData: %v", err)
 	}
@@ -57,7 +59,7 @@ func TestBuildPerFieldCodecs_PopulatesFieldType(t *testing.T) {
 	for _, s := range all {
 		structNames[s.Name] = true
 	}
-	codecs, err := h.buildPerFieldCodecs(page, structNames, map[string]string{})
+	codecs, err := h.buildPerFieldCodecs(page, structNames, map[string]string{}, nil)
 	if err != nil {
 		t.Fatalf("buildPerFieldCodecs: %v", err)
 	}
@@ -79,23 +81,23 @@ func TestBuildPerFieldCodecs_AllKindsCompile(t *testing.T) {
 	item := structInfo{
 		Name: "Item",
 		Fields: []fieldInfo{
-			{Name: "V", Type: "int"},
+			testFieldInfo("V", "int"),
 		},
 	}
 	parent := structInfo{
 		Name:    "AllKinds",
 		KeyName: "allkinds",
 		Fields: []fieldInfo{
-			{Name: "Prim", Type: "int"},
-			{Name: "Sub", Type: "Item"},
-			{Name: "Tags", Type: "[]string"},
-			{Name: "M", Type: "map[string]Item"},
-			{Name: "Ptr", Type: "*Item"},
-			{Name: "Data", Type: "[]byte"},
+			testFieldInfo("Prim", "int"),
+			testFieldInfo("Sub", "Item"),
+			testFieldInfo("Tags", "[]string"),
+			testFieldInfo("M", "map[string]Item"),
+			testFieldInfo("Ptr", "*Item"),
+			testFieldInfo("Data", "[]byte"),
 		},
 	}
 	structNames := map[string]bool{"Item": true, "AllKinds": true}
-	codecs, err := h.buildPerFieldCodecs(parent, structNames, map[string]string{})
+	codecs, err := h.buildPerFieldCodecs(parent, structNames, map[string]string{}, nil)
 	if err != nil {
 		t.Fatalf("buildPerFieldCodecs: %v", err)
 	}
@@ -113,56 +115,77 @@ func TestBuildPerFieldCodecs_AllKindsCompile(t *testing.T) {
 	_ = item
 }
 
-func TestParseGothicTag_Basic(t *testing.T) {
-	h := DefaultWasmHelper()
-	if got := h.parseGothicTag(`gothic:"i32"`); got != "i32" {
-		t.Errorf("parseGothicTag: got %q, want %q", got, "i32")
+func TestParseFieldTag(t *testing.T) {
+	h := &WasmHelper{}
+	tests := []struct {
+		name       string
+		input      string
+		wantGothic string
+		wantName   string
+		wantCompr  WasmCompression
+	}{
+		{
+			name:       "basic gothic tag",
+			input:      "`gothic:\"compress\"`",
+			wantGothic: "compress",
+			wantName:   "",
+			wantCompr:  WasmCompressionGzip,
+		},
+		{
+			name:       "empty tag string",
+			input:      "",
+			wantGothic: "",
+			wantName:   "",
+			wantCompr:  WasmCompressionGzip,
+		},
+		{
+			name:       "multi-tag brotli",
+			input:      "`gothic:\"compress\" name:\"Foo\" compression:\"brotli\"`",
+			wantGothic: "compress",
+			wantName:   "Foo",
+			wantCompr:  WasmCompressionBrotli,
+		},
+		{
+			name:       "brotli uppercase",
+			input:      "`gothic:\"compress\" compression:\"BROTLI\"`",
+			wantGothic: "compress",
+			wantName:   "",
+			wantCompr:  WasmCompressionBrotli,
+		},
+		{
+			name:       "single tag skip",
+			input:      "`gothic:\"skip\"`",
+			wantGothic: "skip",
+			wantName:   "",
+			wantCompr:  WasmCompressionGzip,
+		},
+		{
+			name:       "unrelated key",
+			input:      "`json:\"bar\"`",
+			wantGothic: "",
+			wantName:   "",
+			wantCompr:  WasmCompressionGzip,
+		},
+		{
+			name:       "quoted char in value",
+			input:      "`gothic:\"a\\\"b\"`",
+			wantGothic: `a"b`,
+			wantName:   "",
+			wantCompr:  WasmCompressionGzip,
+		},
 	}
-	if got := h.parseGothicTag(`json:"x" gothic:"skip"`); got != "skip" {
-		t.Errorf("parseGothicTag mixed: got %q, want %q", got, "skip")
-	}
-	if got := h.parseGothicTag(`json:"x"`); got != "" {
-		t.Errorf("parseGothicTag missing: got %q, want empty", got)
-	}
-}
-
-func TestParseGothicTag_Empty(t *testing.T) {
-	h := DefaultWasmHelper()
-	if got := h.parseGothicTag(""); got != "" {
-		t.Errorf("parseGothicTag empty input: got %q, want empty", got)
-	}
-}
-
-func TestParseNameTag_Basic(t *testing.T) {
-	h := DefaultWasmHelper()
-	if got := h.parseNameTag(`name:"page"`); got != "page" {
-		t.Errorf("parseNameTag: got %q, want %q", got, "page")
-	}
-	if got := h.parseNameTag(`json:"x" name:"my-key"`); got != "my-key" {
-		t.Errorf("parseNameTag mixed: got %q, want %q", got, "my-key")
-	}
-	if got := h.parseNameTag(`other:"x"`); got != "" {
-		t.Errorf("parseNameTag missing: got %q, want empty", got)
-	}
-}
-
-func TestParseCompressionTag_DefaultsToGzip(t *testing.T) {
-	h := DefaultWasmHelper()
-	if got := h.parseCompressionTag(""); got != WasmCompressionGzip {
-		t.Errorf("parseCompressionTag empty: got %v, want gzip", got)
-	}
-	if got := h.parseCompressionTag(`json:"x"`); got != WasmCompressionGzip {
-		t.Errorf("parseCompressionTag missing: got %v, want gzip", got)
-	}
-}
-
-func TestParseCompressionTag_Brotli(t *testing.T) {
-	h := DefaultWasmHelper()
-	if got := h.parseCompressionTag(`compression:"brotli"`); got != WasmCompressionBrotli {
-		t.Errorf("parseCompressionTag brotli: got %v, want brotli", got)
-	}
-	// Case-insensitive.
-	if got := h.parseCompressionTag(`compression:"BROTLI"`); got != WasmCompressionBrotli {
-		t.Errorf("parseCompressionTag BROTLI upper: got %v, want brotli", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotGothic, gotName, gotCompr := h.parseFieldTag(tt.input)
+			if gotGothic != tt.wantGothic {
+				t.Errorf("gothic: got %q, want %q", gotGothic, tt.wantGothic)
+			}
+			if gotName != tt.wantName {
+				t.Errorf("name: got %q, want %q", gotName, tt.wantName)
+			}
+			if gotCompr != tt.wantCompr {
+				t.Errorf("compression: got %v, want %v", gotCompr, tt.wantCompr)
+			}
+		})
 	}
 }

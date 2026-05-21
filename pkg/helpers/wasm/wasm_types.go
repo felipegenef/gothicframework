@@ -126,5 +126,6 @@ type structInfo struct {
 type fieldInfo struct {
 	Name      string
 	Type      string
+	TypeRef   typeRef // populated by parseStructsFromSource via typeRefFromExpr
 	GothicTag string
 }

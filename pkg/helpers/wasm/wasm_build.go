@@ -60,9 +60,13 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	}
 
 	mainPath := filepath.Join(genDir, "main.go")
-	ctxSnippets, ctxStructs, ctxAliases := h.collectContextSnippets()
-	body := h.rewriteContextCalls(page.FuncBody, ctxStructs)
-	if err := h.writeWasmMain(page.SourceFile, body, page.Imports, page.Helpers, ctxSnippets, ctxStructs, ctxAliases, mainPath); err != nil {
+	ctxSnippets, ctxStructs, ctxAliases, ctxRefAliases := h.collectContextSnippets()
+	body, err := h.rewriteContextCalls(page.FuncBody, ctxStructs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wasm: rewrite context calls %s: %v\n", page.SourceFile, err)
+		os.Exit(1)
+	}
+	if err := h.writeWasmMain(page.SourceFile, body, page.Imports, page.Helpers, ctxSnippets, ctxStructs, ctxAliases, ctxRefAliases, mainPath); err != nil {
 		return err
 	}
 
@@ -177,7 +181,7 @@ func (h *WasmHelper) CopyWasmExec(destDir string) error {
 }
 
 func (h *WasmHelper) GenerateContextManagers(outDir string) error {
-	snippets, structs, aliases := h.collectContextSnippets()
+	snippets, structs, aliases, refAliases := h.collectContextSnippets()
 	if !h.hasCtxStructs(structs) {
 		return nil
 	}
@@ -189,14 +193,14 @@ func (h *WasmHelper) GenerateContextManagers(outDir string) error {
 		if s.KeyName == "" {
 			continue
 		}
-		if err := h.buildContextManager(s, snippets, structs, aliases, outDir); err != nil {
+		if err := h.buildContextManager(s, snippets, structs, aliases, refAliases, outDir); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStructs []structInfo, aliases map[string]string, outDir string) error {
+func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStructs []structInfo, aliases map[string]string, refAliases map[string]typeRef, outDir string) error {
 	wasmName := "ctx-" + s.KeyName
 	compression := s.Compression
 	var hash string
@@ -233,7 +237,7 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 	}
 
 	mainPath := filepath.Join(genDir, "main.go")
-	codecs, err := h.buildCodecData(allStructs, aliases)
+	codecs, err := h.buildCodecData(allStructs, aliases, refAliases)
 	if err != nil {
 		return fmt.Errorf("wasm: context codec: %w", err)
 	}
@@ -241,7 +245,7 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 	for _, st := range allStructs {
 		structNames[st.Name] = true
 	}
-	fields, err := h.buildManagerFieldData(s, structNames, aliases)
+	fields, err := h.buildManagerFieldData(s, structNames, aliases, refAliases)
 	if err != nil {
 		return fmt.Errorf("wasm: manager fields: %w", err)
 	}
@@ -301,12 +305,12 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 	return nil
 }
 
-func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, helpers []string, ctxSnippets []string, ctxStructs []structInfo, aliases map[string]string, dest string) error {
-	codecs, err := h.buildCodecData(ctxStructs, aliases)
+func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, helpers []string, ctxSnippets []string, ctxStructs []structInfo, aliases map[string]string, refAliases map[string]typeRef, dest string) error {
+	codecs, err := h.buildCodecData(ctxStructs, aliases, refAliases)
 	if err != nil {
 		return fmt.Errorf("wasm: codec: %w", err)
 	}
-	wasmFuncs, err := h.buildWasmCtxFuncData(ctxStructs, aliases)
+	wasmFuncs, err := h.buildWasmCtxFuncData(ctxStructs, aliases, refAliases)
 	if err != nil {
 		return fmt.Errorf("wasm: ctx func data: %w", err)
 	}
