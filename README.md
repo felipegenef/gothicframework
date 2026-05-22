@@ -1,4 +1,4 @@
-<img alt="background doc" src="Doc/Assets/gothic-friends.png" width="100%"/>
+<img alt="background doc" src="Doc/Assets/gothic-hero.png" width="100%"/>
 
 <p align="center">
   <img alt="logo" src="Doc/Assets/gothic-g-no-bg.png" width="100"/>
