@@ -29,7 +29,7 @@ Whether you're launching a SaaS, building internal tools, or prototyping somethi
 
 Gothic Framework comes with built-in AWS SAM integration, making deployment to the cloud **as simple as a single command**. Focus on your app’s features and logic — not on cloud setup or DevOps headaches.
 
-<img alt="infrastructure" src="Doc/Assets/Infrastructure.jpeg" width="100%"/>
+<!-- <img alt="infrastructure" src="Doc/Assets/Infrastructure.jpeg" width="100%"/> -->
 
 ---
 
