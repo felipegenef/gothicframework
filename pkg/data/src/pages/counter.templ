@@ -1,0 +1,48 @@
+package pages
+
+import (
+	routes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+	. "github.com/felipegenef/gothicframework/pkg/wasm"
+	"net/http"
+	"strconv"
+	"{{.GoModName}}/src/layouts"
+	. "{{.GoModName}}/src/topics"
+)
+
+type CounterPageProps = interface{}
+
+var CounterConfig = routes.RouteConfig[CounterPageProps]{
+	Type:       routes.STATIC,
+	HttpMethod: routes.GET,
+	Middleware: func(w http.ResponseWriter, r *http.Request) CounterPageProps {
+		return nil
+	},
+	WasmCompression: routes.BROTLI,
+	ClientSideState: func() {
+		topic := GetCounterTopic()
+		count := CreateObservable(0)
+
+		Observe(func() {
+			topic.Set(CounterState{Count: count.Get()})
+		}, count)
+
+		Observe(func() {
+			SetText("counter-value", strconv.Itoa(count.Get()))
+		}, count)
+
+		CreateWasmFunc("increment", func() {
+			count.Set(count.Get() + 1)
+		})
+	},
+}
+
+templ Counter(props CounterPageProps) {
+	@layouts.PageLayout() {
+		@MountCounterTopic()
+		<div class="flex flex-col items-center justify-center gap-8 w-full max-w-xl text-center">
+			<h1 class="text-white text-3xl font-bold">WASM Counter</h1>
+			<p id="counter-value" class="text-cyan-400 text-6xl font-mono font-bold">0</p>
+			<button onclick="increment()" class="bg-purple-600 hover:bg-purple-400 text-white font-bold text-2xl w-16 h-16 rounded-full">+</button>
+		</div>
+	}
+}

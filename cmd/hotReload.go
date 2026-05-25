@@ -307,8 +307,20 @@ func (command *HotReloadCommand) buildWasmAll() {
 	command.cli.Wasm.PregenerateTopicStubs()
 	pages, err := command.cli.Wasm.ScanPages("src/pages", "src/components")
 	if err != nil {
-		wasmErrorf("scan failed: %v", err)
-		return
+		if strings.Contains(err.Error(), "go mod tidy") || strings.Contains(err.Error(), "updates to go.mod needed") {
+			wasmLogf("go.mod out of date — running go mod tidy...")
+			tidy := exec.Command("go", "mod", "tidy")
+			tidy.Stderr = os.Stderr
+			if tidyErr := tidy.Run(); tidyErr != nil {
+				wasmErrorf("go mod tidy failed: %v", tidyErr)
+				return
+			}
+			pages, err = command.cli.Wasm.ScanPages("src/pages", "src/components")
+		}
+		if err != nil {
+			wasmErrorf("scan failed: %v", err)
+			return
+		}
 	}
 	if len(pages) == 0 {
 		return
