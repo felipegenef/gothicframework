@@ -3,7 +3,7 @@ module github.com/felipegenef/gothicframework
 go 1.25.0
 
 require (
-	github.com/a-h/templ v0.3.898
+	github.com/a-h/templ v0.3.1020
 	github.com/andybalholm/brotli v1.1.0
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/go-chi/chi/v5 v5.2.1
@@ -15,7 +15,7 @@ require (
 	golang.org/x/image v0.26.0
 	golang.org/x/net v0.54.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/tools v0.32.0
+	golang.org/x/tools v0.35.0
 )
 
 require (
@@ -30,6 +30,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/mod v0.25.0 // indirect
+	golang.org/x/mod v0.26.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 )

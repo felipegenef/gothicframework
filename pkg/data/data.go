@@ -88,6 +88,10 @@ var DefaultCLIData = GothicCliData{
 		// page files
 		"src/pages/index.templ":      srcFolder,
 		"src/pages/revalidate.templ": srcFolder,
+		"src/pages/counter.templ":    srcFolder,
+		"src/pages/counter_templ.go": srcFolder,
+		// topic files
+		"src/topics/counter_topic.go": srcFolder,
 		// layout files
 		"src/layouts/layout.templ": srcFolder,
 		// css files
@@ -113,6 +117,7 @@ var DefaultCLIData = GothicCliData{
 		"public/imageExample",
 		// Cli Dirs
 		".gothicCli/templates",
+		".gothicCli/templates/wasm",
 		// Src Dirs
 		"src/api",
 		"src/components",
@@ -120,6 +125,7 @@ var DefaultCLIData = GothicCliData{
 		"src/layouts",
 		"src/pages",
 		"src/routes",
+		"src/topics",
 	},
 	GitIgnore:    gitIgnore,
 	Env:          env,
@@ -132,6 +138,7 @@ var DefaultCLIData = GothicCliData{
 	CustomTemplateBasedPages: map[string]string{
 		"src/pages/revalidate.templ": "Revalidate",
 		"src/pages/index.templ":      "Index",
+		"src/pages/counter.templ":    "Counter",
 	},
 	CustomTemplateBasedComponents: map[string]string{
 		"src/components/helloWorld.templ": "HelloWorld",

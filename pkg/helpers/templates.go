@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/template"
 )
@@ -92,7 +93,9 @@ func (helper *TemplateHelper) CreateFromTemplate(fileTemplate embed.FS, template
 		return err
 	}
 	data := template.Must(template.New(templateFilePath).Parse(string(templateBytes)))
-	// Cria ou abre o arquivo de saída
+	if err := os.MkdirAll(filepath.Dir(outputFilePath), 0755); err != nil {
+		return err
+	}
 	outFile, err := os.Create(outputFilePath)
 	if err != nil {
 		return err
@@ -140,6 +143,9 @@ func (helper *TemplateHelper) DeleteFile(filePath string) error {
 func (helper *TemplateHelper) CopyFromFs(fileTemplate embed.FS, templateFilePath string, outputFilePath string) error {
 	templateBytes, err := fs.ReadFile(fileTemplate, templateFilePath)
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(outputFilePath), 0755); err != nil {
 		return err
 	}
 	return os.WriteFile(outputFilePath, templateBytes, 0644)
