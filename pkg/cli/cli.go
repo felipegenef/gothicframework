@@ -101,12 +101,22 @@ func (cli *GothicCli) GetConfig() (Config, error) {
 	return config, nil
 }
 
-func (cli *GothicCli) InitializeModule(goModuleName string) error {
+func (cli *GothicCli) InitializeModule(goModuleName string, frameworkVersion string) error {
 	initCmd := exec.Command("go", "mod", "init", goModuleName)
 	initCmd.Stdin = os.Stdin
 	initCmd.Stderr = os.Stderr
 	if err := initCmd.Run(); err != nil {
 		return fmt.Errorf("error running go mod init: %w", err)
+	}
+	// Pin the exact gothicframework pseudo-version before go mod tidy so the
+	// proxy cannot resolve a stale cached version instead.
+	if frameworkVersion != "" {
+		pinCmd := exec.Command("go", "get", "github.com/felipegenef/gothicframework@"+frameworkVersion)
+		pinCmd.Stdin = os.Stdin
+		pinCmd.Stderr = os.Stderr
+		if err := pinCmd.Run(); err != nil {
+			return fmt.Errorf("error pinning gothicframework version: %w", err)
+		}
 	}
 	tidyCmd := exec.Command("go", "mod", "tidy")
 	tidyCmd.Stdin = os.Stdin

@@ -77,7 +77,7 @@ func (command *InitCommand) CreateNewGothicApp(data cli_data.GothicCliData) erro
 	if _, err := command.cli.Tailwind.EnsureBinary(); err != nil {
 		return fmt.Errorf("error downloading tailwind binary: %w", err)
 	}
-	if err := command.cli.InitializeModule(command.gothicCliData.GoModName); err != nil {
+	if err := command.cli.InitializeModule(command.gothicCliData.GoModName, CURRENT_COMMIT); err != nil {
 		return err
 	}
 	if err := command.cli.Templ.Render(); err != nil {
