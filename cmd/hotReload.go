@@ -313,7 +313,19 @@ func (command *HotReloadCommand) buildWasmAll() {
 	if len(pages) == 0 {
 		return
 	}
-	wasmLogf("building %d page(s)...", len(pages))
+	var nPages, nComponents int
+	for _, p := range pages {
+		if p.IsComponent {
+			nComponents++
+		} else {
+			nPages++
+		}
+	}
+	topics := command.cli.Wasm.CountTopicManagers()
+	wasmLogf("building %s, %s, %s...",
+		wasmCount(nPages, "page(s)"),
+		wasmCount(nComponents, "component(s)"),
+		wasmCount(topics, "topic manager(s)"))
 	if err := command.cli.Wasm.GenerateAll(pages, "public/wasm"); err != nil {
 		wasmErrorf("build failed (continuing with stale binaries): %v", err)
 	}

@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-// The primitive ContextKey factories are constructed via newPrimitiveKey.
+// The primitive TopicKey factories are constructed via newPrimitiveKey.
 // Each test asserts that encode(value) followed by decode(...) round-trips
 // representative values: min, zero, max, and a typical value. This guards
-// against drift between the WASM-side (context.go) and server-side
-// (context_stub.go) factories.
+// against drift between the WASM-side (topic.go) and server-side
+// (topic_stub.go) factories.
 //
 // Functional coverage for the cross-module dispatch helpers
-// (BroadcastCtxEncoded / ListenCtxEvent and the _gothicPending hybrid
+// (BroadcastTopicEncoded / ListenTopicEvent and the _gothicPending hybrid
 // dispatch/listen pattern) lives in the TestGothic Playwright suite —
 // specifically `codec-ctsetdeep-repro.spec.ts` and
 // `codec-stress-random.spec.ts`. Those helpers depend on `syscall/js`
@@ -24,8 +24,8 @@ import (
 // do, is:
 //
 //   1. Lock the exported signatures across the WASM and stub builds via
-//      typed function-variable assignments. Any drift between context.go
-//      and context_stub.go fails the build at this site.
+//      typed function-variable assignments. Any drift between topic.go
+//      and topic_stub.go fails the build at this site.
 //   2. Exercise the stub no-op bodies to confirm they never panic, so
 //      server-side code (which links against the !js stub) can call them
 //      without runtime surprises.
@@ -212,31 +212,31 @@ func TestPrimitiveKeyNames(t *testing.T) {
 	}
 }
 
-// TestContextDispatchAPISurface locks the exported signatures of the
-// cross-module context dispatch helpers. Binding each function to a typed
-// variable forces a build error if dom.go's WASM-side signature ever drifts
-// from the stub-side signature in context_stub.go — Go won't let two files
+// TestTopicDispatchAPISurface locks the exported signatures of the
+// cross-module topic dispatch helpers. Binding each function to a typed
+// variable forces a build error if topic.go's WASM-side signature ever drifts
+// from the stub-side signature in topic_stub.go — Go won't let two files
 // in the same package multiplex the same name with different types.
 //
 // The dispatch bodies themselves rely on `syscall/js` and can only run under
 // the WASM build; the functional coverage for the hybrid `_gothicPending`
 // dispatch/listen pattern lives in TestGothic's Playwright suite. See the
 // file-level comment above for the specific spec files.
-func TestContextDispatchAPISurface(t *testing.T) {
+func TestTopicDispatchAPISurface(t *testing.T) {
 	var (
-		_ func(keyName, encoded string)            = BroadcastCtxEncoded
-		_ func(keyName, encoded string)            = RequestCtxSet
-		_ func(keyName, encoded string)            = BroadcastCtxOnline
-		_ func(keyName string, fn func(string))    = ListenCtxEvent
-		_ func(keyName string, fn func(string))    = ListenCtxSetReq
-		_ func(keyName string, fn func(string))    = ListenCtxOnline
-		_ func(keyName string, fn func())          = ListenCtxPing
-		_ func(keyName string)                     = PingCtxManager
+		_ func(keyName, encoded string)            = BroadcastTopicEncoded
+		_ func(keyName, encoded string)            = RequestTopicSet
+		_ func(keyName, encoded string)            = BroadcastTopicOnline
+		_ func(keyName string, fn func(string))    = ListenTopicEvent
+		_ func(keyName string, fn func(string))    = ListenTopicSetReq
+		_ func(keyName string, fn func(string))    = ListenTopicOnline
+		_ func(keyName string, fn func())          = ListenTopicPing
+		_ func(keyName string)                     = PingTopicManager
 		_ func(keyName string, isOnline func() bool) = PingUntilOnline
-		_ func(keyName, fieldName, encoded string)   = BroadcastCtxEncodedField
-		_ func(keyName, fieldName, encoded string)   = RequestCtxSetField
-		_ func(keyName, fieldName string, fn func(string)) = ListenCtxEventField
-		_ func(keyName, fieldName string, fn func(string)) = ListenCtxSetReqField
+		_ func(keyName, fieldName, encoded string)   = BroadcastTopicEncodedField
+		_ func(keyName, fieldName, encoded string)   = RequestTopicSetField
+		_ func(keyName, fieldName string, fn func(string)) = ListenTopicEventField
+		_ func(keyName, fieldName string, fn func(string)) = ListenTopicSetReqField
 	)
 
 	// Stub no-op contract: each function must be safe to invoke under the
@@ -248,30 +248,30 @@ func TestContextDispatchAPISurface(t *testing.T) {
 			t.Fatalf("stub dispatch helper panicked: %v", r)
 		}
 	}()
-	BroadcastCtxEncoded("k", "v")
-	RequestCtxSet("k", "v")
-	BroadcastCtxOnline("k", "v")
-	ListenCtxEvent("k", func(string) {})
-	ListenCtxSetReq("k", func(string) {})
-	ListenCtxOnline("k", func(string) {})
-	ListenCtxPing("k", func() {})
-	PingCtxManager("k")
+	BroadcastTopicEncoded("k", "v")
+	RequestTopicSet("k", "v")
+	BroadcastTopicOnline("k", "v")
+	ListenTopicEvent("k", func(string) {})
+	ListenTopicSetReq("k", func(string) {})
+	ListenTopicOnline("k", func(string) {})
+	ListenTopicPing("k", func() {})
+	PingTopicManager("k")
 	PingUntilOnline("k", func() bool { return true })
-	BroadcastCtxEncodedField("k", "F", "v")
-	RequestCtxSetField("k", "F", "v")
-	ListenCtxEventField("k", "F", func(string) {})
-	ListenCtxSetReqField("k", "F", func(string) {})
+	BroadcastTopicEncodedField("k", "F", "v")
+	RequestTopicSetField("k", "F", "v")
+	ListenTopicEventField("k", "F", func(string) {})
+	ListenTopicSetReqField("k", "F", func(string) {})
 }
 
 func TestPayloadBufStubSignatures(t *testing.T) {
-	// Compile-time check that all exported context functions exist
+	// Compile-time check that all exported topic functions exist
 	// in the stub build (this file builds under !js tag).
-	var _ = ListenCtxEvent
-	var _ = ListenCtxSetReq
-	var _ = ListenCtxOnline
-	var _ = ListenCtxPing
-	var _ = BroadcastCtxEncoded
-	var _ = RequestCtxSet
-	var _ = PingCtxManager
-	var _ = BroadcastCtxOnline
+	var _ = ListenTopicEvent
+	var _ = ListenTopicSetReq
+	var _ = ListenTopicOnline
+	var _ = ListenTopicPing
+	var _ = BroadcastTopicEncoded
+	var _ = RequestTopicSet
+	var _ = PingTopicManager
+	var _ = BroadcastTopicOnline
 }

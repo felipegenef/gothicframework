@@ -1,5 +1,5 @@
 //go:build js && wasm
-// Code generated for context manager — DO NOT EDIT.
+// Code generated for topic manager — DO NOT EDIT.
 
 package main
 
@@ -97,7 +97,7 @@ func _bytesEqual(a, b []byte) bool {
 }
 
 func _registerListeners() {
-	ListenCtxSetReq("{{.KeyName}}", func(detail string) {
+	ListenTopicSetReq("{{.KeyName}}", func(detail string) {
 		// Use capture helpers to walk the payload field-by-field (zero
 		// allocations for unchanged fields — avoids _decode_{{.StructName}}
 		// which allocates O(N) for large slices on every click).
@@ -108,25 +108,25 @@ func _registerListeners() {
 			if !_bytesEqual(nb, _fields["{{.FieldName}}"]) {
 				cp := append([]byte(nil), nb...)
 				_fields["{{.FieldName}}"] = cp
-				BroadcastCtxEncodedField("{{$.KeyName}}", "{{.FieldName}}", string(cp))
+				BroadcastTopicEncodedField("{{$.KeyName}}", "{{.FieldName}}", string(cp))
 				_wholeDirty = true
 			}
 		}
 {{end}}		// Update the JS store so late-joining consumers see fresh data via
-		// ReadCtxStore — but do NOT dispatch gothic:ctx-online here. Dispatching
-		// on every click would trigger ListenCtxOnline in all consumer WASMs,
+		// ReadTopicStore — but do NOT dispatch gothic:topic-online here. Dispatching
+		// on every click would trigger ListenTopicOnline in all consumer WASMs,
 		// which allocates the full struct bytes (potentially hundreds of KB for
 		// large slices) on every click. Consumers get per-field events instead;
 		// the full online ack is sent on pings only.
 		if _wholeDirty {
 			_ensureWholeFresh()
-			UpdateCtxOnlineStore("{{.KeyName}}", _lastWholeEncoded)
+			UpdateTopicOnlineStore("{{.KeyName}}", _lastWholeEncoded)
 		}
 	})
-{{range .Fields}}	ListenCtxSetReqField("{{$.KeyName}}", "{{.FieldName}}", func(detail string) {
+{{range .Fields}}	ListenTopicSetReqField("{{$.KeyName}}", "{{.FieldName}}", func(detail string) {
 		b := []byte(detail)
 		_fields["{{.FieldName}}"] = b
-		BroadcastCtxEncodedField("{{$.KeyName}}", "{{.FieldName}}", string(b))
+		BroadcastTopicEncodedField("{{$.KeyName}}", "{{.FieldName}}", string(b))
 		// Defer the whole-struct rebuild until something actually reads it.
 		_wholeDirty = true
 	})
@@ -134,11 +134,11 @@ func _registerListeners() {
 
 func _broadcastOnline() {
 	_ensureWholeFresh()
-	BroadcastCtxOnline("{{.KeyName}}", string(_lastWholeEncoded))
+	BroadcastTopicOnline("{{.KeyName}}", string(_lastWholeEncoded))
 }
 
 func main() {
-	if stored, ok := ReadCtxStore("{{.KeyName}}"); ok {
+	if stored, ok := ReadTopicStore("{{.KeyName}}"); ok {
 		b := []byte(stored)
 		_lastWholeEncoded = b
 		_captureAllFields(b)
@@ -151,7 +151,7 @@ func main() {
 		_captureAllFields(_lastWholeEncoded)
 	}
 	_registerListeners()
-	ListenCtxPing("{{.KeyName}}", func() { _broadcastOnline() })
+	ListenTopicPing("{{.KeyName}}", func() { _broadcastOnline() })
 	_broadcastOnline()
 	select {}
 }

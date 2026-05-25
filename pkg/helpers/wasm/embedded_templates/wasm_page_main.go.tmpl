@@ -43,45 +43,45 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 
 {{end}}
 {{range .WasmFuncs}}{{$fn := .}}func {{.CtorName}}(initial ...{{.StructName}}) *{{.TypeName}} {
-	ctx := &{{.TypeName}}{
+	topic := &{{.TypeName}}{
 {{range .Fields}}		{{.Name}}: NewObservableField({{$fn.StructName}}{}.{{.Name}}),
 {{end}}		_pending: "",
 	}
-{{range .FieldCodecs}}	ctx.{{.FieldName}}.SetBroadcast(func() {
-		if !ctx._online {
+{{range .FieldCodecs}}	topic.{{.FieldName}}.SetBroadcast(func() {
+		if !topic._online {
 			return
 		}
-		v := {{$fn.StructName}}{ {{.FieldName}}: ctx.{{.FieldName}}.Peek() }
+		v := {{$fn.StructName}}{ {{.FieldName}}: topic.{{.FieldName}}.Peek() }
 		e := NewEncoder(8)
 		{{.EncLines}}
-		RequestCtxSetField("{{$fn.KeyName}}", "{{.FieldName}}", string(e.Buf))
+		RequestTopicSetField("{{$fn.KeyName}}", "{{.FieldName}}", string(e.Buf))
 	})
-{{end}}{{range .FieldCodecs}}	ListenCtxEventField("{{$fn.KeyName}}", "{{.FieldName}}", func(detail string) {
+{{end}}{{range .FieldCodecs}}	ListenTopicEventField("{{$fn.KeyName}}", "{{.FieldName}}", func(detail string) {
 		d := &Decoder{Buf: []byte(detail)}
 		var v {{$fn.StructName}}
 		{{.DecLines}}
-		ctx.{{.FieldName}}.ApplyExternal(v.{{.FieldName}})
+		topic.{{.FieldName}}.ApplyExternal(v.{{.FieldName}})
 	})
-{{end}}	if _stored, _ok := ReadCtxStore("{{$fn.KeyName}}"); _ok {
+{{end}}	if _stored, _ok := ReadTopicStore("{{$fn.KeyName}}"); _ok {
 		_init := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(_stored)})
-{{range .Fields}}		ctx.{{.Name}}.ApplyExternal(_init.{{.Name}})
-{{end}}		ctx._online = true
+{{range .Fields}}		topic.{{.Name}}.ApplyExternal(_init.{{.Name}})
+{{end}}		topic._online = true
 	}
-	ListenCtxOnline("{{$fn.KeyName}}", func(detail string) {
+	ListenTopicOnline("{{$fn.KeyName}}", func(detail string) {
 		decoded := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(detail)})
 		BeginBatch()
-{{range .Fields}}		ctx.{{.Name}}.ApplyExternal(decoded.{{.Name}})
+{{range .Fields}}		topic.{{.Name}}.ApplyExternal(decoded.{{.Name}})
 {{end}}		EndBatch()
-		if !ctx._online {
-			ctx._online = true
-			if ctx._pending != "" {
-				RequestCtxSet("{{$fn.KeyName}}", ctx._pending)
-				ctx._pending = ""
+		if !topic._online {
+			topic._online = true
+			if topic._pending != "" {
+				RequestTopicSet("{{$fn.KeyName}}", topic._pending)
+				topic._pending = ""
 			}
 		}
 	})
-	PingUntilOnline("{{$fn.KeyName}}", func() bool { return ctx._online })
-	return ctx
+	PingUntilOnline("{{$fn.KeyName}}", func() bool { return topic._online })
+	return topic
 }
 
 func (c *{{.TypeName}}) Set(v {{.StructName}}) {
@@ -89,7 +89,7 @@ func (c *{{.TypeName}}) Set(v {{.StructName}}) {
 	_encode_{{$fn.StructName}}(v, e)
 	enc := string(e.Buf)
 	if c._online {
-		RequestCtxSet("{{$fn.KeyName}}", enc)
+		RequestTopicSet("{{$fn.KeyName}}", enc)
 	} else {
 		c._pending = enc
 	}

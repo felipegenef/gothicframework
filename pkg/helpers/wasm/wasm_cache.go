@@ -58,7 +58,7 @@ func (c *wasmCache) save() {
 	_ = os.WriteFile(wasmCachePath, data, 0644)
 }
 
-// pageInputHash hashes the source file, all context files, and the page template.
+// pageInputHash hashes the source file, all topic files, and the page template.
 // Any change in these inputs produces a different hash and triggers a rebuild.
 func (h *WasmHelper) pageInputHash(page WasmPage) string {
 	hh := sha256.New()
@@ -73,8 +73,8 @@ func (h *WasmHelper) pageInputHash(page WasmPage) string {
 	return hex.EncodeToString(hh.Sum(nil))
 }
 
-// ctxManagerInputHash hashes all topic files, the manager template, and the compression method.
-func (h *WasmHelper) ctxManagerInputHash(compression WasmCompression) string {
+// topicManagerInputHash hashes all topic files, the manager template, and the compression method.
+func (h *WasmHelper) topicManagerInputHash(compression WasmCompression) string {
 	hh := sha256.New()
 	h.feedTopicFiles(hh)
 	h.feedFile(hh, tmplTopicManagerMain)
@@ -107,7 +107,7 @@ func (h *WasmHelper) feedTopicFiles(hh io.Writer) {
 }
 
 // feedRuntimeFS hashes the embedded WASM runtime sources so any change to the
-// runtime (events.go, context.go, dom.go, etc.) invalidates the per-page WASM
+// runtime (events.go, topic.go, dom.go, etc.) invalidates the per-page WASM
 // cache. Files are walked in sorted order for deterministic hashing.
 func (h *WasmHelper) feedRuntimeFS(hh io.Writer) {
 	var paths []string

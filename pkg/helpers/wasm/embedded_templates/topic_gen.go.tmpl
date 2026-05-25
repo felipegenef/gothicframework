@@ -4,7 +4,7 @@ package {{.PkgName}}
 
 import (
 	. "github.com/felipegenef/gothicframework/pkg/wasm"
-{{- if .HasCtx}}
+{{- if .HasTopics}}
 	"github.com/a-h/templ"
 	routes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
 {{- end}}
@@ -59,7 +59,7 @@ func (c *{{.TypeName}}) Set(v {{.StructName}}) {
 }
 
 {{end}}
-{{- if .HasCtx}}
+{{- if .HasTopics}}
 {{range .MountFns}}func {{.FuncName}}() templ.Component {
 	return routes.TopicManagerComponent("{{.WasmName}}", {{.CompressionConst}})
 }

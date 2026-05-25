@@ -33,7 +33,8 @@ func (h *WasmHelper) ScanPages(pagesDir, componentsDir string) ([]WasmPage, erro
 	defer func() { h.astLoader = nil }()
 
 	var pages []WasmPage
-	for _, dir := range []string{pagesDir, componentsDir} {
+	for i, dir := range []string{pagesDir, componentsDir} {
+		isComponent := i == 1
 		if dir == "" {
 			continue
 		}
@@ -49,6 +50,7 @@ func (h *WasmHelper) ScanPages(pagesDir, componentsDir string) ([]WasmPage, erro
 				return ferr
 			}
 			if found {
+				page.IsComponent = isComponent
 				pages = append(pages, page)
 			}
 			return nil

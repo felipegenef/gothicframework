@@ -50,6 +50,7 @@ type WasmPage struct {
 	OutputName  string
 	Compression WasmCompression
 	Compiler    WasmCompilerChoice
+	IsComponent bool // true when scanned from componentsDir, false for pagesDir
 }
 
 func NewWasmHelper(goos, goarch string) WasmHelper {

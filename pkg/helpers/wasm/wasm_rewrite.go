@@ -27,7 +27,7 @@ import (
 // rewriteAutoKeys rewrites every `AutoKey[T]("name")` call inside src to the
 // equivalent `BinaryKey[T]("name", _encode_T, _decode_T)` call. The input is
 // a slice of top-level declarations stripped of the `package` line and the
-// `import` block (see collectContextSnippets). Returns an error with
+// `import` block (see collectTopicSnippets). Returns an error with
 // positional info on AST parse failure — callers must abort.
 func (h *WasmHelper) rewriteAutoKeys(src string) (string, error) {
 	return astRewriteAutoKeys(src)

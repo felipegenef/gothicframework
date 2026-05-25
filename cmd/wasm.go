@@ -98,7 +98,19 @@ func newWasmBuildCommand(cli gothic_cli.GothicCli) RunEFunc {
 			fmt.Println("wasm: no pages with ClientSideState found")
 			return nil
 		}
-		fmt.Printf("wasm: found %d page(s) with ClientSideState\n", len(pages))
+		var nPages, nComponents int
+		for _, p := range pages {
+			if p.IsComponent {
+				nComponents++
+			} else {
+				nPages++
+			}
+		}
+		topics := cli.Wasm.CountTopicManagers()
+		fmt.Printf(wasmTimestamp()+" "+wasmTag+" wasm: found %s, %s, %s\n",
+			wasmCount(nPages, "page(s)"),
+			wasmCount(nComponents, "component(s)"),
+			wasmCount(topics, "topic manager(s)"))
 		return cli.Wasm.GenerateAll(pages, "public/wasm")
 	}
 }

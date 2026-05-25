@@ -62,7 +62,7 @@ type ServerTopicFuncData struct {
 	Fields     []TopicFieldData
 }
 
-// MountFnData holds data for an AddXxxContext() mount function.
+// MountFnData holds data for an AddXxxTopic() mount function.
 type MountFnData struct {
 	FuncName         string
 	WasmName         string
@@ -73,7 +73,7 @@ type MountFnData struct {
 // TopicGenData drives topic_gen.go.tmpl.
 type TopicGenData struct {
 	PkgName     string
-	HasCtx      bool
+	HasTopics      bool
 	HasTime     bool // true when any struct field has type time.Time
 	Codecs      []StructCodecData
 	KeyVars     []KeyVarData

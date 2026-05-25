@@ -163,19 +163,19 @@ func CreateWasmFunc(name string, fn func())            {}
 func CreateWasmStringFunc(name string, fn func(string)) {}
 func CreateWasmBoolFunc(name string, fn func(bool))    {}
 
-// ── Context infrastructure (generated code only — not part of the user API) ───
+// ── Topic infrastructure (generated code only — not part of the user API) ────
 
-// ContextKey is a typed key used by the auto-generated context system.
-// Users never construct these directly — the CLI generates them from src/context/*.go.
-type ContextKey[T any] struct {
+// TopicKey is a typed key used by the auto-generated topic system.
+// Users never construct these directly — the CLI generates them from src/topics/*.go.
+type TopicKey[T any] struct {
 	Name   string
 	encode func(T) string
 	decode func(string) T
 }
 
 // BinaryKey is used exclusively by CLI-generated code in src/topics/topic_gen.go.
-func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decoder) T) ContextKey[T] {
-	return ContextKey[T]{
+func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decoder) T) TopicKey[T] {
+	return TopicKey[T]{
 		Name: name,
 		encode: func(v T) string {
 			e := NewEncoder(64)
@@ -191,7 +191,7 @@ func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decode
 
 // AutoKey is rewritten to BinaryKey by the CLI before TinyGo compiles.
 // Server-side this is a no-op stub so the code compiles.
-func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name} }
+func AutoKey[T any](name string) TopicKey[T] { return TopicKey[T]{Name: name} }
 
 // Compression is the compression algorithm used for a topic's WASM payload.
 type Compression int
@@ -360,18 +360,18 @@ func unhex(c byte) byte {
 	return 0
 }
 
-// SharedCtxObservable is the internal type backing auto-generated context constructors.
-// Users access shared context via the generated e.g. PageCtxContext() — not directly.
-type SharedCtxObservable[T any] struct{ value T }
+// SharedTopicObservable is the internal type backing auto-generated topic constructors.
+// Users access shared topic state via the generated accessor e.g. PageTopic() — not directly.
+type SharedTopicObservable[T any] struct{ value T }
 
-func (s *SharedCtxObservable[T]) Get() T  { return s.value }
-func (s *SharedCtxObservable[T]) Set(v T) { s.value = v }
+func (s *SharedTopicObservable[T]) Get() T  { return s.value }
+func (s *SharedTopicObservable[T]) Set(v T) { s.value = v }
 
-// ObservableField is a per-field reactive observable for a generated context struct.
+// ObservableField is a per-field reactive observable for a generated topic struct.
 // Server-side stub — no broadcast, no effect tracking.
 type ObservableField[T any] struct{ sig *Observable[T] }
 
-// NewObservableField creates a ContextField with the given initial value.
+// NewObservableField creates an ObservableField with the given initial value.
 func NewObservableField[T any](initial T) *ObservableField[T] {
 	return &ObservableField[T]{sig: &Observable[T]{value: initial}}
 }

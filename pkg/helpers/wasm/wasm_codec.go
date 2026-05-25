@@ -168,7 +168,7 @@ func (h *WasmHelper) codecLines(fi fieldInfo, structNames map[string]bool, alias
 		return h.pointerCodecLines(n, resolvedRef.(PointerOf).Elem, structNames, aliases, refAliases)
 
 	case kindStruct:
-		// Known struct defined in src/context/ — prefer original name when present,
+		// Known struct defined in src/topics/ — prefer original name when present,
 		// fall back to the resolved name (handles `type MyItem Item`).
 		structTyp := typ
 		resolvedName := resolvedRef.(Named).Name
@@ -626,7 +626,7 @@ func (h *WasmHelper) buildTopicTypeData(structs []structInfo) []TopicTypeData {
 }
 
 // buildManagerFieldData produces one ManagerFieldData per field of the named
-// context struct, in declaration order.
+// topic struct, in declaration order.
 func (h *WasmHelper) buildManagerFieldData(s structInfo, structNames map[string]bool, aliases map[string]string, refAliases map[string]typeRef) ([]ManagerFieldData, error) {
 	out := make([]ManagerFieldData, 0, len(s.Fields))
 	for _, f := range s.Fields {
@@ -648,7 +648,7 @@ func (h *WasmHelper) buildManagerFieldData(s structInfo, structNames map[string]
 	return out, nil
 }
 
-// buildPerFieldCodecs produces one PerFieldCodec per field of the named context
+// buildPerFieldCodecs produces one PerFieldCodec per field of the named topic
 // struct, in declaration order. Used by the consumer (page) template.
 func (h *WasmHelper) buildPerFieldCodecs(s structInfo, structNames map[string]bool, aliases map[string]string, refAliases map[string]typeRef) ([]PerFieldCodec, error) {
 	out := make([]PerFieldCodec, 0, len(s.Fields))

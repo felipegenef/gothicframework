@@ -16,7 +16,7 @@ import (
 )
 
 // Build pipeline: orchestrates TinyGo compile + wasm-opt + compression for
-// page WASMs and context-manager WASMs, plus the wasm_exec.js copy. Methods
+// page WASMs and topic-manager WASMs, plus the wasm_exec.js copy. Methods
 // here run on the host (not inside WASM).
 
 const (
@@ -60,13 +60,13 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	}
 
 	mainPath := filepath.Join(genDir, "main.go")
-	ctxSnippets, ctxStructs, ctxAliases, ctxRefAliases := h.collectTopicSnippets()
-	body, err := h.rewriteTopicCalls(page.FuncBody, ctxStructs)
+	topicSnippets, topicStructs, topicAliases, topicRefAliases := h.collectTopicSnippets()
+	body, err := h.rewriteTopicCalls(page.FuncBody, topicStructs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wasm: rewrite topic calls %s: %v\n", page.SourceFile, err)
 		os.Exit(1)
 	}
-	if err := h.writeWasmMain(page.SourceFile, body, page.Imports, page.Helpers, ctxSnippets, ctxStructs, ctxAliases, ctxRefAliases, mainPath); err != nil {
+	if err := h.writeWasmMain(page.SourceFile, body, page.Imports, page.Helpers, topicSnippets, topicStructs, topicAliases, topicRefAliases, mainPath); err != nil {
 		return err
 	}
 
@@ -185,6 +185,19 @@ func compilerLabel(c WasmCompilerChoice) string {
 	}
 }
 
+// CountTopicManagers returns the number of topic structs that will produce a
+// topic-manager WASM binary (i.e. structs that have a KeyName set).
+func (h *WasmHelper) CountTopicManagers() int {
+	_, structs, _, _ := h.collectTopicSnippets()
+	n := 0
+	for _, s := range structs {
+		if s.KeyName != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // pagesUseStandardGo returns true if any page uses the standard Go compiler.
 // Such pages need the standard-Go wasm_exec.js, which is incompatible with TinyGo's.
 func pagesUseStandardGo(pages []WasmPage) bool {
@@ -296,7 +309,7 @@ func (h *WasmHelper) CopyWasmExec(destDir string) error {
 
 func (h *WasmHelper) GenerateTopicManagers(outDir string) error {
 	snippets, structs, aliases, refAliases := h.collectTopicSnippets()
-	if !h.hasCtxStructs(structs) {
+	if !h.hasTopicStructs(structs) {
 		return nil
 	}
 
@@ -319,7 +332,7 @@ func (h *WasmHelper) buildTopicManager(s structInfo, snippets []string, allStruc
 	compression := s.Compression
 	var hash string
 	if h.cache != nil {
-		hash = h.ctxManagerInputHash(compression)
+		hash = h.topicManagerInputHash(compression)
 		outPath := filepath.Join(outDir, wasmName+".wasm"+compressionExt(compression))
 		if h.cache.upToDate(wasmName, hash) {
 			if _, err := os.Stat(outPath); err == nil {
@@ -419,18 +432,18 @@ func (h *WasmHelper) buildTopicManager(s structInfo, snippets []string, allStruc
 	return nil
 }
 
-func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, helpers []string, ctxSnippets []string, ctxStructs []structInfo, aliases map[string]string, refAliases map[string]typeRef, dest string) error {
-	codecs, err := h.buildCodecData(ctxStructs, aliases, refAliases)
+func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, helpers []string, topicSnippets []string, topicStructs []structInfo, aliases map[string]string, refAliases map[string]typeRef, dest string) error {
+	codecs, err := h.buildCodecData(topicStructs, aliases, refAliases)
 	if err != nil {
 		return fmt.Errorf("wasm: codec: %w", err)
 	}
-	wasmFuncs, err := h.buildWasmTopicFuncData(ctxStructs, aliases, refAliases)
+	wasmFuncs, err := h.buildWasmTopicFuncData(topicStructs, aliases, refAliases)
 	if err != nil {
 		return fmt.Errorf("wasm: topic func data: %w", err)
 	}
-	// Inject "time" import when any context struct uses time.Time and the page
+	// Inject "time" import when any topic struct uses time.Time and the page
 	// hasn't already imported it from its own source file.
-	if h.hasTimeFields(ctxStructs) {
+	if h.hasTimeFields(topicStructs) {
 		hasTime := false
 		for _, imp := range stdImports {
 			if strings.Contains(imp, `"time"`) {
@@ -466,10 +479,10 @@ func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, helper
 		SourceFile:  src,
 		StdImports:  stdImports,
 		Codecs:      codecs,
-		KeyVars:     h.buildKeyVarData(ctxStructs),
-		TopicTypes:    h.buildTopicTypeData(ctxStructs),
+		KeyVars:     h.buildKeyVarData(topicStructs),
+		TopicTypes:    h.buildTopicTypeData(topicStructs),
 		WasmFuncs:     wasmFuncs,
-		TopicSnippets: ctxSnippets,
+		TopicSnippets: topicSnippets,
 		Body:        indented.String(),
 		Helpers:     helpers,
 	})

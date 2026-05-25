@@ -152,7 +152,7 @@ func TestInjectWasmEnvelope_EndToEnd_Fragment(t *testing.T) {
 	}
 }
 
-// TestInjectWasmBootstrap_CtxSetPersistentBuffer verifies the __gothic_ctx.set
+// TestInjectWasmBootstrap_CtxSetPersistentBuffer verifies the __gothic_topic.set
 // implementation uses a persistent per-key Uint8Array backed by a doubling
 // ArrayBuffer, instead of allocating a fresh Uint8Array via .slice() per
 // broadcast. The TinyGo wasm_exec bridge only finalizes string refs, so every
@@ -213,7 +213,7 @@ func TestInjectWasmBootstrap_FindScopeHelperInjected(t *testing.T) {
 }
 
 // TestInjectWasmBootstrap_FindScopeOnlyDeclaredOnce guards the per-page-once
-// install semantics: the helper is declared inside the if(!window.__gothic_ctx)
+// install semantics: the helper is declared inside the if(!window.__gothic_topic)
 // guard and gated by its own if(!window.__gothicFindScope) check, so multiple
 // WASM modules on the same page must not redeclare it.
 func TestInjectWasmBootstrap_FindScopeOnlyDeclaredOnce(t *testing.T) {

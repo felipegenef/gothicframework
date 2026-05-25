@@ -14,32 +14,26 @@ import (
 	"github.com/felipegenef/gothicframework/pkg/helpers/wasm/astx"
 )
 
-// Context scanning and parsing.
+// Topic scanning and parsing.
 //
-// Reads src/context/*.go, parses struct definitions and type aliases,
+// Reads src/topics/*.go, parses struct definitions and type aliases,
 // generates topic_gen.go (server-side helpers), and produces inlinable
 // user code snippets for the WASM build pipeline.
 
 const tmplTopicGen = ".gothicCli/templates/wasm/topic_gen.go"
 
-// resolveTopicSourceDir returns the directory to scan for topic/context definitions
-// and the corresponding generated-file name. Prefers src/topics/ (new pattern)
-// over src/context/ (legacy). Returns ("","", false) if neither exists.
+// resolveTopicSourceDir returns the directory to scan for topic definitions
+// and the generated-file name. Returns ("","", false) if src/topics/ does not exist.
 func resolveTopicSourceDir() (dir, genFile string, ok bool) {
 	if _, err := os.Stat("src/topics"); err == nil {
 		return "src/topics", "topic_gen.go", true
 	}
-	if _, err := os.Stat("src/context"); err == nil {
-		fmt.Fprintf(os.Stderr, "warning: src/context/ is deprecated; rename to src/topics/\n")
-		return "src/context", "context_gen.go", true
-	}
 	return "", "", false
 }
 
-// collectTopicSnippets reads src/topics/*.go (preferred) or src/context/*.go
-// (legacy), parses struct definitions, generates topic_gen.go / context_gen.go
-// (server side), and returns inlinable user code snippets and the parsed
-// structs for template rendering.
+// collectTopicSnippets reads src/topics/*.go, parses struct definitions,
+// generates topic_gen.go (server side), and returns inlinable user code
+// snippets and the parsed structs for template rendering.
 func (h *WasmHelper) collectTopicSnippets() (snippets []string, structs []structInfo, aliases map[string]string, refAliases map[string]typeRef) {
 	sourceDir, genFile, ok := resolveTopicSourceDir()
 	if !ok {
@@ -132,7 +126,7 @@ func (h *WasmHelper) collectTopicSnippets() (snippets []string, structs []struct
 // (etc.) accessors exist as real symbols by the time go/packages loads the
 // project — otherwise pages that call `PageTopic()` fail to type-check.
 //
-// Safe to call repeatedly; a no-op when no src/topics or src/context dir exists.
+// Safe to call repeatedly; a no-op when no src/topics/ dir exists.
 func (h *WasmHelper) PregenerateTopicStubs() {
 	// Ensure on-disk templates (including topic_gen.go.tmpl) match the CLI
 	// version. UpdateFromTemplate reads from disk, so the template must exist
@@ -159,7 +153,7 @@ func (h *WasmHelper) writeTopicKeyStubs(structs []structInfo, aliases map[string
 
 	data := TopicGenData{
 		PkgName:     pkgName,
-		HasCtx:      h.hasCtxStructs(structs),
+		HasTopics:      h.hasTopicStructs(structs),
 		HasTime:     h.hasTimeFields(structs),
 		Codecs:      codecs,
 		KeyVars:     h.buildKeyVarData(structs),
@@ -287,7 +281,7 @@ func (h *WasmHelper) parseFieldTag(tagValue string) (gothic, name string, compre
 	return
 }
 
-func (h *WasmHelper) hasCtxStructs(structs []structInfo) bool {
+func (h *WasmHelper) hasTopicStructs(structs []structInfo) bool {
 	for _, s := range structs {
 		if s.KeyName != "" {
 			return true

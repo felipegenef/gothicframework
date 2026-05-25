@@ -124,7 +124,7 @@ func (c *wasmInjectedComponent) Render(ctx context.Context, w io.Writer) error {
 	return err
 }
 
-// emptyComponent renders nothing — used as the inner component for context managers.
+// emptyComponent renders nothing — used as the inner component for topic managers.
 type emptyComponent struct{}
 
 func (emptyComponent) Render(_ context.Context, _ io.Writer) error { return nil }
@@ -135,10 +135,6 @@ func TopicManagerComponent(wasmName string, compression CompressionMethod) templ
 	return &wasmInjectedComponent{inner: emptyComponent{}, wasmName: wasmName, compression: compression, compiler: GothicTinyGo}
 }
 
-// Deprecated: use TopicManagerComponent. Will be removed after TestGothic conversion.
-func ContextManagerComponent(wasmName string, compression CompressionMethod) templ.Component {
-	return TopicManagerComponent(wasmName, compression)
-}
 
 func (config *RouteConfig[T]) resolveHandler(component func(T) templ.Component) http.HandlerFunc {
 	switch config.Type {

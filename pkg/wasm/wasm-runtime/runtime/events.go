@@ -89,7 +89,7 @@ func findScope() string {
 
 // dispatch / dispatchVoid / dispatchString / dispatchBool are intra-module
 // helpers for user-registered callbacks invoked via the global proxy. They
-// are NOT part of the cross-module context broadcast path (ListenCtxEvent
+// are NOT part of the cross-module topic broadcast path (ListenTopicEvent
 // et al.) — args here come from a direct fn.Invoke() in the same
 // synchronous turn, not from a CustomEvent dispatched across modules.
 //

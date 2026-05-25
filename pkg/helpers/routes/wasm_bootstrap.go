@@ -90,8 +90,8 @@ func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMe
     if(!el)return;
     var id=wn+'-'+(Math.random()*0xFFFFFFFF>>>0).toString(16).padStart(8,'0');
     el.setAttribute('data-gothic-scope',id);
-    if(!window.__gothic_ctx){
-        window.__gothic_ctx=(function(){
+    if(!window.__gothic_topic){
+        window.__gothic_topic=(function(){
             var _state={};
             var _subs={};
             var _bufs={};
@@ -170,7 +170,7 @@ func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMe
         );
         window.__gothicCurrentModule=id;
         window.__gothic_set=window.__gothic_set||{};
-        window.__gothic_set[id]=function(k,p,n){window.__gothic_ctx.set(k,p,n,r.instance);};
+        window.__gothic_set[id]=function(k,p,n){window.__gothic_topic.set(k,p,n,r.instance);};
         go.run(r.instance);
     })();
 })();
@@ -192,7 +192,7 @@ func wasmExecFile(compiler WasmCompiler) string {
 
 // injectWasmEnvelope is a convenience helper that owns the instance id for one
 // render: it stamps the wrapper, then bakes the same id into the bootstrap.
-// Callers (wasmInjectedComponent.Render, ContextManagerComponent) should use
+// Callers (wasmInjectedComponent.Render, TopicManagerComponent) should use
 // this so the two halves of the envelope cannot drift.
 func injectWasmEnvelope(html []byte, wasmName string, compression CompressionMethod, compiler WasmCompiler) []byte {
 	scoped, inst := injectGothicScope(html, wasmName)

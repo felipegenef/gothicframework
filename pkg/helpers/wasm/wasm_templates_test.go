@@ -35,9 +35,9 @@ func TestEnsureWasmTemplates_CreatesMissing(t *testing.T) {
 		t.Errorf("written page template is missing trailing `select {}`; got: %s", got)
 	}
 
-	ctxPath := filepath.Join(dir, tmplTopicManagerMain)
-	if _, err := os.Stat(ctxPath); err != nil {
-		t.Errorf("ctx manager template not written: %v", err)
+	tmplPath := filepath.Join(dir, tmplTopicManagerMain)
+	if _, err := os.Stat(tmplPath); err != nil {
+		t.Errorf("topic manager template not written: %v", err)
 	}
 }
 
