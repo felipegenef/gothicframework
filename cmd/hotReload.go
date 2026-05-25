@@ -44,6 +44,8 @@ type HotReloadCommand struct {
 	excludedDirs      []string
 	watchedExtensions []string
 	excludeRegex      regexp.Regexp
+	debounceTimer     *time.Timer
+	debounceMu        sync.Mutex
 }
 
 func newHotReloadCommandCli(cli *gothic_cli.GothicCli) HotReloadCommand {
@@ -164,7 +166,7 @@ func (command *HotReloadCommand) watchForChanges() {
 				return
 			}
 			if command.shouldHandle(event.Name, event.Op) {
-				command.rebuild()
+				command.scheduleRebuild()
 			}
 			// Dynamically watch new directories
 			if event.Op&fsnotify.Create == fsnotify.Create {
@@ -179,9 +181,8 @@ func (command *HotReloadCommand) watchForChanges() {
 				}
 			}
 		case err, ok := <-watcher.Errors:
-			command.rebuild()
 			if !ok {
-				fmt.Printf("error reloading app: %v", err)
+				return
 			}
 			log.Println("Watcher error:", err)
 		}
@@ -230,6 +231,18 @@ func (command *HotReloadCommand) watchTailwindChanges() {
 			log.Println("Tailwind process exited normally.")
 		}
 	}()
+}
+
+// scheduleRebuild coalesces rapid fsnotify events (e.g. WRITE+CHMOD from a
+// single editor save) into a single rebuild. The timer resets on each event;
+// the rebuild fires 150ms after the last event in the burst.
+func (command *HotReloadCommand) scheduleRebuild() {
+	command.debounceMu.Lock()
+	defer command.debounceMu.Unlock()
+	if command.debounceTimer != nil {
+		command.debounceTimer.Stop()
+	}
+	command.debounceTimer = time.AfterFunc(150*time.Millisecond, command.rebuild)
 }
 
 func (command *HotReloadCommand) rebuild() {

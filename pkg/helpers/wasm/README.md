@@ -4,7 +4,7 @@ This package is the **server-side code-generation engine** for Gothic's WASM fea
 
 When you run `gothicframework wasm`, this package:
 1. Parses your `.templ` files with the Go AST to extract `ClientSideState` functions and their referenced types.
-2. Generates a typed codec (encode/decode) for every struct used as WASM context state.
+2. Generates a typed codec (encode/decode) for every struct used as WASM topic state.
 3. Rewrites the WASM entry point source and compiles it with TinyGo (`-gc conservative -target wasm`).
 
 The **user-facing API** (what you actually call inside `ClientSideState`) lives in `pkg/wasm` and is documented below. That package exposes no-op stubs for server-side compilation and the real TinyGo implementations for the WASM binary.
@@ -85,7 +85,7 @@ Runs `fn` and re-runs it whenever any listed dep changes.
 - **No deps** — runs `fn` exactly once when state loads. No reactive subscription.
 - **With deps** — re-runs `fn` whenever any dep's `.Set()` is called.
 
-Deps must be `*Observable[T]` values returned by `CreateObservable` (or compatible — e.g. `*ObservableField[T]` from generated context structs). Anything else is silently skipped in production and prints a `console.warn` in dev mode.
+Deps must be `*Observable[T]` values returned by `CreateObservable` (or compatible — e.g. `*ObservableField[T]` from generated topic structs). Anything else is silently skipped in production and prints a `console.warn` in dev mode.
 
 ```go
 // Run once — kick off something at startup.
@@ -126,16 +126,23 @@ Like `Observe`, but `fn` returns a cleanup function. The cleanup runs before eac
 Useful for timers, subscriptions, or any resource that must be released before re-creating it.
 
 ```go
+// Restart a goroutine whenever `interval` changes; clean up the previous one.
 ObserveWithCleanup(func() func() {
-    id := js.Global().Call("setInterval", js.FuncOf(func(js.Value, []js.Value) any {
-        tick.Set(tick.Get() + 1)
-        return nil
-    }), 1000)
-
-    return func() {
-        js.Global().Call("clearInterval", id)
-    }
-}, tick)
+    done := make(chan struct{})
+    go func() {
+        t := time.NewTicker(time.Duration(interval.Get()) * time.Millisecond)
+        defer t.Stop()
+        for {
+            select {
+            case <-t.C:
+                tick.Set(tick.Get() + 1)
+            case <-done:
+                return
+            }
+        }
+    }()
+    return func() { close(done) }
+}, interval)
 ```
 
 ---
@@ -188,10 +195,20 @@ import gothicComponents "github.com/felipegenef/gothicframework/components"
 @gothicComponents.StatefulComponentOf(&components.CounterWidgetConfig)
 
 // With a custom loading placeholder:
-@gothicComponents.StatefulComponent(components.CounterWidgetConfig.Path) {
+@gothicComponents.StatefulComponentOf(&components.CounterWidgetConfig) {
     <div class="animate-pulse">Loading…</div>
 }
+
+// With hx-vals to pass form values to the component's middleware:
+@gothicComponents.StatefulComponentOf(&components.CounterWidgetConfig,
+    gothicComponents.StatefulComponentData{
+        "userId": userID,
+        "tab":    "overview",
+    },
+)
 ```
+
+When `StatefulComponentData` is nil or empty, the `hx-vals` attribute is omitted entirely. When values are provided they are JSON-encoded and set as `hx-vals` on the HTMX trigger element, making them available as form values in the component's `Middleware` function.
 
 The old manual pattern — `<div hx-get="/components/counterwidget" hx-trigger="load" hx-swap="outerHTML">` — still works but has no compile-time path check and breaks silently on rename.
 
@@ -245,9 +262,9 @@ CreateWasmBoolFunc("setChecked", func(val bool) {
 
 ## DOM Helpers
 
-All helpers operate by element ID. They are safe to call with an unknown ID — missing elements are silently skipped.
-
 ### Text and HTML
+
+All helpers operate by element ID and are scope-aware — they search inside the calling module's own `[data-gothic-scope]` subtree, not the full document. Missing elements are silently skipped.
 
 | Function | Description |
 |----------|-------------|
@@ -311,6 +328,150 @@ Observe(func() {
 SetAttr("dialog", "aria-hidden", "false")
 SetStyle("progress-bar", "width", strconv.Itoa(pct.Get())+"%")
 SetStyle("preview-swatch", "backgroundColor", hex.Get())
+```
+
+---
+
+## JS Escape Hatch — `JSValue` and `JS()`
+
+For anything not covered by the named DOM helpers, `pkg/wasm` exposes a thin wrapper around `syscall/js.Value` that works identically server-side (as a no-op stub) and in the WASM binary (as the real JS bridge).
+
+### Constructors
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `JS() JSValue` | `JSValue` wrapping `js.Global()` | Full access to the global scope. |
+| `Window() JSValue` | alias of `JS()` | Same as `JS()`. |
+| `Document() JSValue` | `JSValue` wrapping `document` | Shorthand for the document object. |
+| `GetElementById(id string) JSValue` | element or null | Searches the full document (not scoped). |
+| `CreateElement(tag string) JSValue` | new element | `document.createElement(tag)`. |
+| `QuerySelector(sel string) JSValue` | first match or null | CSS selector on the full document. |
+| `QuerySelectorAll(sel string) []JSValue` | all matches | CSS selector on the full document. |
+
+**Note:** `GetElementById`, `QuerySelector`, and `QuerySelectorAll` search the full document, not the component's scoped subtree. Use the named `SetText`/`AddClass`/etc. helpers when you need scope isolation.
+
+### `JSValue` methods
+
+| Method | Description |
+|--------|-------------|
+| `Get(key string) JSValue` | Property access: `v.prop`. |
+| `Set(key string, val any)` | Property assignment: `v.prop = val`. |
+| `Call(method string, args ...any) JSValue` | Method call: `v.method(args...)`. |
+| `New(args ...any) JSValue` | Constructor call: `new v(args...)`. |
+| `String() string` | Returns the string representation. Also triggers `finalizeRef` in TinyGo, freeing the JS bridge slot. |
+| `Int() int` | Numeric value as Go `int`. |
+| `Float() float64` | Numeric value as Go `float64`. |
+| `Bool() bool` | Boolean value. |
+| `IsNull() bool` | True if the JS value is `null`. |
+| `IsUndefined() bool` | True if the JS value is `undefined`. |
+| `Truthy() bool` | True if the JS value is truthy. |
+| `Index(i int) JSValue` | Array index access: `v[i]`. |
+| `SetIndex(i int, val any)` | Array index assignment: `v[i] = val`. |
+| `Length() int` | `v.length`. |
+
+### Byte transfer
+
+| Function | Description |
+|----------|-------------|
+| `CopyBytesToJS(dst JSValue, src []byte) int` | Copies `src` into a JS `Uint8Array`. Returns bytes copied. |
+| `CopyBytesToGo(dst []byte, src JSValue) int` | Copies from a JS `Uint8Array` into `dst`. Returns bytes copied. |
+
+### Element tree helpers
+
+| Function | Description |
+|----------|-------------|
+| `AppendChild(parent, child JSValue)` | `parent.appendChild(child)`. |
+| `RemoveElement(el JSValue)` | `el.remove()`. |
+| `ClickElement(el JSValue)` | `el.click()`. |
+
+### Other helpers
+
+| Function | Description |
+|----------|-------------|
+| `ConsoleLog(args ...interface{})` | `console.log(args...)`. |
+| `ExecJS(script string)` | Evaluates an arbitrary JS string via `eval()`. |
+| `TriggerDownload(filename string, data []byte, mimeType string)` | Prompts the browser to download `data` as `filename`. Creates a temporary Blob URL, clicks it, then revokes the URL. |
+| `WriteClipboard(text string)` | `navigator.clipboard.writeText(text)`. |
+
+### Navigation helpers
+
+| Function | Description |
+|----------|-------------|
+| `Navigate(url string)` | Sets `location.href` — full page navigation. |
+| `Reload()` | `location.reload()`. |
+| `PushState(url, title string)` | `history.pushState(null, title, url)` — SPA navigation without reload. |
+| `GoBack()` | `history.back()`. |
+
+Example — building a DOM element dynamically:
+
+```go
+CreateWasmFunc("addItem", func() {
+    li := CreateElement("li")
+    li.Set("textContent", input.Get())
+    list := GetElementById("item-list")
+    AppendChild(list, li)
+})
+```
+
+Example — executing arbitrary JS:
+
+```go
+ExecJS(`document.body.classList.toggle("dark")`)
+```
+
+---
+
+## Storage Helpers
+
+All storage helpers are no-ops server-side and use the real browser APIs in the WASM binary.
+
+### LocalStorage
+
+| Function | Description |
+|----------|-------------|
+| `LocalStorageSet(key, value string)` | `localStorage.setItem(key, value)`. |
+| `LocalStorageGet(key string) string` | `localStorage.getItem(key)` — returns `""` if missing. |
+| `LocalStorageRemove(key string)` | `localStorage.removeItem(key)`. |
+
+### SessionStorage
+
+| Function | Description |
+|----------|-------------|
+| `SessionStorageSet(key, value string)` | `sessionStorage.setItem(key, value)`. |
+| `SessionStorageGet(key string) string` | `sessionStorage.getItem(key)` — returns `""` if missing. |
+| `SessionStorageRemove(key string)` | `sessionStorage.removeItem(key)`. |
+
+### Cookies
+
+`CookieOptions` configures cookie attributes:
+
+```go
+type CookieOptions struct {
+    MaxAge   int    // seconds; 0 = session cookie
+    Path     string // defaults to "/"
+    SameSite string // "Strict", "Lax", or "None"
+    Secure   bool
+}
+```
+
+| Function | Description |
+|----------|-------------|
+| `CookieSet(key, value string, opts ...CookieOptions)` | Writes a cookie to `document.cookie`. |
+| `CookieGet(key string) string` | Reads a cookie value — returns `""` for missing or HttpOnly cookies. |
+| `CookieDelete(key string)` | Expires the cookie immediately (`Max-Age: -1`). |
+
+```go
+// Persist a theme preference across sessions
+CookieSet("theme", "dark", CookieOptions{
+    MaxAge:   60 * 60 * 24 * 365, // 1 year
+    SameSite: "Lax",
+    Secure:   true,
+})
+
+theme := CookieGet("theme")
+if theme == "" {
+    theme = "light"
+}
 ```
 
 ---
@@ -472,7 +633,7 @@ CreateWasmFunc("uploadChunked", func() {
 
 ## Topics
 
-Topics let multiple WASM components share reactive state without prop drilling. Because each component is a separate WASM module with its own Go heap, values are serialized through a JavaScript store (`window.__gothic_context`) and broadcast via `CustomEvent`. Define a struct once in `src/topics/` and the CLI generates a `<Struct>Topic()` factory that handles encoding, decoding, broadcast, and subscription.
+Topics let multiple WASM components share reactive state without prop drilling. Because each component is a separate WASM module with its own Go heap, values are serialized through a JavaScript store (`window.__gothic_context`) and broadcast via `CustomEvent`. Define a struct once in `src/topics/` and the CLI generates a typed accessor function that handles encoding, decoding, broadcast, and subscription.
 
 ### Defining a topic
 
@@ -489,10 +650,124 @@ Topics let multiple WASM components share reactive state without prop drilling. 
        Theme string
    }
 
-   var _ = CreateTopic(Page{}, TopicConfig{Name: "page", Compression: "BROTLI"})
+   var _ = CreateTopic(Page{}, TopicConfig{
+       Name:             "page",
+       Compression:      BROTLI,
+       SubscriberFnName: "PageTopic",
+       ComponentFnName:  "AddPageTopic",
+   })
    ```
 
-   `TopicConfig.Name` sets the topic key used in JS events (e.g. `gothic:context:page:Theme`). `Compression` selects `"BROTLI"` or `"GZIP"` for the manager WASM binary (default: `"GZIP"`).
+   All four `TopicConfig` fields:
+
+   | Field | Type | Default | Description |
+   |-------|------|---------|-------------|
+   | `Name` | `string` | — | Topic key used in browser events (e.g. `gothic:context:page:Theme`). Must be unique across all topics in the project. |
+   | `Compression` | `Compression` | `GZIP` | Compression algorithm for the manager WASM binary. Use `BROTLI` or `GZIP`. |
+   | `SubscriberFnName` | `string` | `<StructName>Topic` | Name of the generated Go function that components call inside `ClientSideState` to subscribe to this topic. |
+   | `ComponentFnName` | `string` | `Add<StructName>Topic` | Name of the generated templ component that page templates call to mount the topic manager on the page. |
+
+   ---
+
+   **`SubscriberFnName` — the subscriber accessor**
+
+   `SubscriberFnName` controls the name of the function generated in `src/topics/topic_gen.go` that components call inside `ClientSideState` to connect to this topic. It returns a `*pageTopic` struct (lowercased struct name) where every field is an `*ObservableField[T]` — reactive values you can read with `.Get()`, update with `.Set()`, and pass to `Observe` as deps.
+
+   ```go
+   // Generated in src/topics/topic_gen.go when SubscriberFnName is "PageTopic":
+   func PageTopic() *pageTopic { ... }
+   ```
+
+   ```go
+   // Called inside ClientSideState in any component on the page:
+   ClientSideState: func() {
+       topic := PageTopic()   // *pageTopic — all fields are *ObservableField[T]
+
+       Observe(func() {
+           SetText("ping-count", strconv.Itoa(topic.Pings.Get()))
+           SetText("label",      topic.Label.Get())
+       }, topic.Pings, topic.Label)
+
+       CreateWasmFunc("ping", func() {
+           topic.Pings.Set(topic.Pings.Peek() + 1)
+       })
+   },
+   ```
+
+   Every component that calls `PageTopic()` — no matter how many separate WASM modules are on the page — connects to the same manager instance through the JS event bus and shares the same state.
+
+   ---
+
+   **`ComponentFnName` — the mount component**
+
+   `ComponentFnName` controls the name of the templ component generated in `src/topics/topic_gen.go` that you call in your page or layout template to boot the topic manager. The manager WASM binary must be on the page **before** any consumer calls `PageTopic()`. The generated component handles the bootstrap script, the correct WASM file reference, and the compression setting — you never write this by hand.
+
+   ```go
+   // Generated in src/topics/topic_gen.go when ComponentFnName is "AddPageTopic":
+   func AddPageTopic() templ.Component { ... }
+   ```
+
+   ```go
+   // Called once in your page template, before any component that uses PageTopic():
+   templ Home() {
+       @AddPageTopic()     // boots the manager — must appear before consumers
+       @PingCounter()      // calls PageTopic() inside its ClientSideState
+       @ThemeSwitcher()    // also calls PageTopic() inside its ClientSideState
+   }
+   ```
+
+   Mount the manager exactly once per page. The bootstrap script is idempotent, so mounting it more than once does not corrupt state, but it does waste a WASM load.
+
+   ---
+
+   **Coupling: `ComponentFnName` falls back to `"Add" + SubscriberFnName`**
+
+   If you set `SubscriberFnName` but omit `ComponentFnName`, the generated component name is `"Add" + SubscriberFnName` — **not** `"Add" + StructName`. Example:
+
+   ```go
+   var _ = CreateTopic(Page{}, TopicConfig{
+       Name:             "page",
+       Compression:      BROTLI,
+       SubscriberFnName: "GetPageState",
+       // ComponentFnName not set → falls back to "AddGetPageState", not "AddPageTopic"
+   })
+   ```
+
+   To avoid surprising generated names, always set both fields explicitly. The VSCode `gtd` snippet scaffolds both automatically.
+
+   **Custom names example:**
+
+   ```go
+   var _ = CreateTopic(Page{}, TopicConfig{
+       Name:             "page",
+       Compression:      BROTLI,
+       SubscriberFnName: "GetPageTopic",   // generates: func GetPageTopic() *pageTopic
+       ComponentFnName:  "MountPageTopic", // generates: func MountPageTopic() templ.Component
+   })
+   ```
+
+   ```go
+   // In your page template:
+   templ Home() {
+       @MountPageTopic()   // custom component name
+       @PingCounter()
+   }
+
+   // In any component's ClientSideState:
+   ClientSideState: func() {
+       topic := GetPageTopic()   // custom accessor name
+       Observe(func() {
+           SetText("pings", strconv.Itoa(topic.Pings.Get()))
+       }, topic.Pings)
+   },
+   ```
+
+   **`Compression` enum:**
+
+   | Constant | Value | Description |
+   |----------|-------|-------------|
+   | `GZIP` | `0` | Default. Compatible with all environments. |
+   | `BROTLI` | `1` | Smaller payload; requires brotli support in the browser. |
 
    **Supported field types:**
 
@@ -520,13 +795,13 @@ Topics let multiple WASM components share reactive state without prop drilling. 
 
    Without a `gothic:` tag the CLI infers the codec from the field's Go type.
 
-2. In any `ClientSideState`, call the auto-generated `PageTopic()` constructor (the name is `<StructName>Topic`):
+2. In any `ClientSideState`, call the auto-generated accessor (default: `<StructName>Topic`, or your `SubscriberFnName` override):
 
    ```go
    ClientSideState: func() {
-       ctx := PageTopic()         // *pageTopic
+       topic := PageTopic()         // *pageTopic
        Observe(func() {
-           ctx.Set(Page{Pings: pings.Get(), Label: "...", Theme: theme.Get()})
+           topic.Set(Page{Pings: pings.Get(), Label: "...", Theme: theme.Get()})
        }, pings, theme)
    }
    ```
@@ -554,7 +829,7 @@ src/pages/home/home.go           ← 4. mount the manager
 **Step 1 — define the shared struct** in `src/topics/`:
 
 ```go
-package gothicwasm // any package name works
+package gothicwasm
 
 import . "github.com/felipegenef/gothicframework/pkg/wasm"
 
@@ -564,32 +839,37 @@ type App struct {
     Label string
 }
 
-var _ = CreateTopic(App{}, TopicConfig{Name: "app"})
+var _ = CreateTopic(App{}, TopicConfig{
+    Name:             "app",
+    Compression:      BROTLI,
+    SubscriberFnName: "AppTopic",
+    ComponentFnName:  "AddAppTopic",
+})
 ```
 
-Run `gothicframework wasm` — the CLI generates `AppTopic()` and a manager WASM binary.
+Run `gothicframework wasm` — the CLI generates `AppTopic()` in `src/topics/topic_gen.go` and a manager WASM binary.
 
 **Step 2 — writer component** (sets state):
 
 ```go
 ClientSideState: func() {
-    ctx := AppTopic()   // *appTopic
+    topic := AppTopic()   // *appTopic
 
     CreateWasmFunc("increment", func() {
-        // ctx.Set fans out to per-field set-requests via the manager
-        ctx.Set(App{
-            Count: ctx.Count.Peek() + 1,
-            Theme: ctx.Theme.Peek(),
-            Label: ctx.Label.Peek(),
+        // topic.Set fans out to per-field set-requests via the manager
+        topic.Set(App{
+            Count: topic.Count.Peek() + 1,
+            Theme: topic.Theme.Peek(),
+            Label: topic.Label.Peek(),
         })
     })
 
     // Or set a single field directly — even more efficient:
     CreateWasmFunc("toggleTheme", func() {
-        if ctx.Theme.Peek() == "light" {
-            ctx.Theme.Set("dark")   // only the Theme field is broadcast
+        if topic.Theme.Peek() == "light" {
+            topic.Theme.Set("dark")   // only the Theme field is broadcast
         } else {
-            ctx.Theme.Set("light")
+            topic.Theme.Set("light")
         }
     })
 },
@@ -599,19 +879,19 @@ ClientSideState: func() {
 
 ```go
 ClientSideState: func() {
-    ctx := AppTopic()   // same key → same manager → same state
+    topic := AppTopic()   // same key → same manager → same state
 
     Observe(func() {
-        SetText("count-display", strconv.Itoa(ctx.Count.Get()))
-    }, ctx.Count)   // only re-runs when Count changes, not on Theme/Label updates
+        SetText("count-display", strconv.Itoa(topic.Count.Get()))
+    }, topic.Count)   // only re-runs when Count changes, not on Theme/Label updates
 
     Observe(func() {
-        if ctx.Theme.Get() == "dark" {
+        if topic.Theme.Get() == "dark" {
             AddClass("body", "dark-mode")
         } else {
             RemoveClass("body", "dark-mode")
         }
-    }, ctx.Theme)
+    }, topic.Theme)
 },
 ```
 
@@ -620,21 +900,23 @@ ClientSideState: func() {
 ```go
 // home.go
 templ Home() {
+    @AddAppTopic()    // generated — sets correct name + compression automatically
+    @CounterComponent()
+    @SidebarComponent()
+}
+```
+
+The generated `AddAppTopic()` helper (from `src/topics/topic_gen.go`) calls `TopicManagerComponent` with the correct key name and compression. You can also call it directly for one-off use:
+
+```go
+templ Home() {
     @routes.TopicManagerComponent("app", routes.GZIP)   // boots the manager WASM
     @CounterComponent()
     @SidebarComponent()
 }
 ```
 
-The manager WASM must be on the page before any consumer calls `AppTopic()`. `TopicManagerComponent` handles this automatically. The generated `AddAppTopic()` helper function (from `src/topics/topic_gen.go`) is the recommended type-safe way:
-
-```go
-templ Home() {
-    @AddAppTopic()    // generated — sets correct name + compression automatically
-    @CounterComponent()
-    @SidebarComponent()
-}
-```
+The manager WASM must be on the page before any consumer calls `AppTopic()`. `AddAppTopic()` (or `TopicManagerComponent`) handles this automatically.
 
 ### Lower-level key factories (advanced)
 
@@ -663,13 +945,13 @@ For one-off primitive shares without defining a struct, the runtime exposes type
 
 ### How it works — full communication flow
 
-Each WASM module runs in its own Go heap — `*Observable[T]` pointers cannot cross module boundaries. The generated context system uses a **manager WASM** as the single source of truth and broadcasts per-field binary updates to consumer WASMs through the JS event bus.
+Each WASM module runs in its own Go heap — `*Observable[T]` pointers cannot cross module boundaries. The generated topic system uses a **manager WASM** as the single source of truth and broadcasts per-field binary updates to consumer WASMs through the JS event bus.
 
 ```
   Consumer WASM A              Manager WASM              Consumer WASM B
   (e.g. counter.wasm)       (e.g. page-ctx-mgr.wasm)    (e.g. sidebar.wasm)
   ─────────────────────     ─────────────────────────    ─────────────────────
-  ctx.Theme.Set("dark")
+  topic.Theme.Set("dark")
     │
     │  encode field → []byte
     │  RequestCtxSetField(
@@ -690,13 +972,13 @@ Each WASM module runs in its own Go heap — `*Observable[T]` pointers cannot cr
   gothic:context:page:Theme        gothic:context:page:Theme
     │                                │
     │  decode bytes → string         │  decode bytes → string
-    │  ctx.Theme.ApplyExternal(v)    │  ctx.Theme.ApplyExternal(v)
+    │  topic.Theme.ApplyExternal(v)  │  topic.Theme.ApplyExternal(v)
     │  → Observe callbacks fire      │  → Observe callbacks fire
     ▼                                ▼
   DOM updated                      DOM updated
 
 
-  ctx.Set(Page{...})   ← whole-struct fan-out path
+  topic.Set(Page{...})   ← whole-struct fan-out path
     │
     │  encode struct → []byte
     │  RequestCtxSet("page", string(bytes))
@@ -784,9 +1066,9 @@ TinyGo's JS bridge maintains a `_values[]` array that maps integer ids to live J
 
 Three independent leaks were found and fixed:
 
-**Leak A — `__gothic_ctx.set()` Uint8Array (context dispatch path)**
+**Leak A — `__gothic_ctx.set()` Uint8Array (topic dispatch path)**
 
-The original `jsUint8ArrayFromBytes`-per-broadcast path allocated a brand-new `Uint8Array` on every context broadcast, creating a permanent `_values[]` entry each time. An intermediate fix (`dispatchDirect`) eliminated that by passing a raw WASM memory offset so the JS side reads from `instance.exports.memory.buffer` directly, with no `Uint8Array` passed through the TinyGo bridge at all. A residual leak remained in the bootstrap's `.slice()` call, which created a new `Uint8Array` on every broadcast. That is now fixed: the bootstrap maintains a persistent per-key `ArrayBuffer`/`Uint8Array` pair that grows with pure-doubling capacity (`byteLen < 128 ? 128 : byteLen * 2`). The `_values[]` entry for a given key is created once at first use and never replaced unless the payload grows past the current buffer capacity.
+The original `jsUint8ArrayFromBytes`-per-broadcast path allocated a brand-new `Uint8Array` on every topic broadcast, creating a permanent `_values[]` entry each time. An intermediate fix (`dispatchDirect`) eliminated that by passing a raw WASM memory offset so the JS side reads from `instance.exports.memory.buffer` directly, with no `Uint8Array` passed through the TinyGo bridge at all. A residual leak remained in the bootstrap's `.slice()` call, which created a new `Uint8Array` on every broadcast. That is now fixed: the bootstrap maintains a persistent per-key `ArrayBuffer`/`Uint8Array` pair that grows with pure-doubling capacity (`byteLen < 128 ? 128 : byteLen * 2`). The `_values[]` entry for a given key is created once at first use and never replaced unless the payload grows past the current buffer capacity.
 
 **Leak B — `findScope()` MouseEvent boxing**
 
@@ -804,7 +1086,7 @@ The original `jsUint8ArrayFromBytes`-per-broadcast path allocated a brand-new `U
 |------|--------|-------|
 | `__gothic_ctx.set()` Uint8Array | ~36 MB/click at 150 k items | 0 new `_values[]` entries (stable payload); O(log N) per key (growing payload) |
 | `findScope()` MouseEvent | ~500 B/click | 0 new `_values[]` entries per click |
-| `PingCtxManager` CustomEvent | N entries (N = context keys × pings) | 1 entry per context key, at first ping only |
+| `PingCtxManager` CustomEvent | N entries (N = topic keys × pings) | 1 entry per topic key, at first ping only |
 
 ---
 
@@ -901,6 +1183,23 @@ go.run(r.instance);
 
 ---
 
+**Per-compiler bootstrap shim cache**
+
+When a page uses both a TinyGo-compiled component and a standard-`go`-compiled component, each compiler emits its own `Go` global constructor in the bootstrap. These collide on the global scope. Gothic prevents this by keying the `Go` constructor cache on the shim filename:
+
+```js
+window.__gothicGoClasses = window.__gothicGoClasses || {};
+if (!window.__gothicGoClasses["wasm_exec.js"]) {
+    // define Go class from wasm_exec.js
+    window.__gothicGoClasses["wasm_exec.js"] = Go;
+}
+const Go = window.__gothicGoClasses["wasm_exec.js"];
+```
+
+Each bootstrap block uses `window.__gothicGoClasses[<shim-filename>]` so TinyGo and the standard Go compiler can coexist on the same page without either overwriting the other's `Go` constructor.
+
+---
+
 **`pkg/wasm/wasm-runtime/runtime/context.go`**
 
 `dispatchDirect` stores the buffer in `dispatchHold` keyed by the **full event name** (prefix + key), then calls the per-module `__gothic_set[moduleID()]` shim which forwards to `__gothic_ctx.set` with the correct instance reference. It then queues an async dispatch via `__gothicDispatchAsync`:
@@ -947,6 +1246,106 @@ The directory still exists and contains the patched `wasm_exec.js` with `>>>= 0`
 
 The direct-memory transport means the payload bytes themselves no longer pass through these patched bridge functions, so the practical risk of the unsigned-pointer bug is greatly reduced — but the patched `wasm_exec.js` is retained until the upstream fix lands.
 
+---
+
+## WasmCompiler — per-route compiler selection
+
+The `WasmCompiler` field on `RouteConfig` selects which toolchain compiles the WASM binary for a given page or component. It is a typed enum defined in `pkg/helpers/routes`:
+
+```go
+type WasmCompiler int
+
+const (
+    GothicTinyGo WasmCompiler = iota // default: CLI-bundled TinyGo binary
+    LocalTinyGo                      // system tinygo binary in PATH
+    Golang                           // GOOS=js GOARCH=wasm standard Go compiler
+)
+```
+
+| Constant | Binary | Use when |
+|----------|--------|----------|
+| `GothicTinyGo` | CLI-bundled TinyGo | Default. Zero setup. Smallest binaries. Full Gothic feature set. |
+| `LocalTinyGo` | `tinygo` in `$PATH` | You want to use a locally-installed TinyGo version (e.g. a different version). |
+| `Golang` | `go` in `$PATH` (GOOS=js GOARCH=wasm) | You need the full standard library (`encoding/json`, `net/http`, etc.) that TinyGo does not support. Produces larger binaries. |
+
+```go
+var MyPageConfig = routes.RouteConfig[MyProps]{
+    ClientSideState: func() { /* ... */ },
+    WasmCompiler:    routes.Golang,       // use standard Go compiler for this page
+}
+```
+
+**Per-compiler bootstrap shim:** When `GothicTinyGo` and `Golang` both appear on the same page (e.g. a TinyGo component inside a Go-compiled page), each compiler's `wasm_exec.js` defines a different `Go` class. Gothic prevents collision by caching each class under `window.__gothicGoClasses[<shim-filename>]` — see the bootstrap section above.
+
+---
+
+## Templ Cache — incremental `.templ` generation
+
+Gothic's hot-reload pipeline runs `templ generate` to convert `.templ` files to Go before WASM compilation. For projects with many templates, regenerating all of them on every change is slow.
+
+The cache lives at `.gothicCli/templ-cache.json` and stores a SHA-256 hash per `.templ` file. On each hot-reload cycle:
+
+1. Gothic reads the cache file.
+2. For each `.templ` file, it computes the current SHA-256 and compares it to the cached hash.
+3. Only **dirty** files (hash mismatch or new) are passed to `templ generate`.
+4. Cache entries for dirty files are updated after successful generation.
+5. If per-file generation fails for any file, Gothic falls back to a full `templ generate` run over the entire directory.
+
+**Result:** editing one `.templ` file triggers `templ generate` only for that file, not the entire `src/` tree.
+
+---
+
+## `PregenerateTopicStubs` — generation ordering
+
+The WASM pipeline calls `PregenerateTopicStubs()` **before** `ScanPages()`. This ensures that `topic_gen.go` (which contains the `func PageTopic() *pageTopic` accessor) exists on disk before `go/packages` loads the user's package for type-checking. Without this ordering, pages that call `PageTopic()` fail to compile because the symbol does not exist yet.
+
+`PregenerateTopicStubs()` is safe to call repeatedly. It is a no-op when `src/topics/` does not exist.
+
+---
+
+## Topic scanning internals (`pkg/helpers/wasm/wasm_context.go`)
+
+### `resolveTopicSourceDir`
+
+Returns the directory to scan (`src/topics/`) and the generated file name (`topic_gen.go`).
+
+### `collectTopicSnippets`
+
+Reads all `*.go` files from the topic source directory, parses each one with `go/ast`, and:
+1. Calls `parseStructsFromSource` to extract struct definitions and type aliases.
+2. Calls `collectCreateTopicMetas` to walk the AST for `var _ = CreateTopic(T{}, TopicConfig{...})` declarations and extract `(structName → topicMeta)` mappings.
+3. Validates that no two structs share the same `TopicConfig.Name` (exits with an error if they do).
+4. Calls `writeTopicKeyStubs` to generate `topic_gen.go`.
+5. Strips package declarations and imports from each source file and returns the remaining code as inline snippets for the WASM build.
+
+### `collectCreateTopicMetas`
+
+AST walk over `*ast.GenDecl` (var) nodes. For each `var _ = CreateTopic(T{}, TopicConfig{...})`:
+- Resolves the struct name from the first argument (composite literal `T{}`).
+- Reads `Name`, `Compression`, `SubscriberFnName`, and `ComponentFnName` from the `TopicConfig` literal via `parseTopicConfigArg`.
+- Stores `SubscriberFnName` into `topicMeta.AccessorName` (overrides the struct-derived default).
+- Stores `ComponentFnName` into `topicMeta.ComponentFnName` (overrides the `Add<StructName>Topic` default).
+
+### `parseTopicConfigArg`
+
+Reads all four `TopicConfig` fields from the composite literal AST node. `Name`, `SubscriberFnName`, and `ComponentFnName` are parsed as string basic literals. `Compression` is handled by `parseCompressionExpr`.
+
+### `parseCompressionExpr`
+
+Resolves a `Compression` field expression to an internal `WasmCompression`. Accepted forms:
+- `BROTLI` — bare identifier (dot-import)
+- `wasm.BROTLI` — selector expression (qualified import)
+- `"BROTLI"` — string literal (also accepted)
+
+Everything else (including `GZIP` / `wasm.GZIP`) maps to `WasmCompressionGzip`.
+
+### `topicFuncNameFor`
+
+Returns the accessor function name for a topic struct. Prefers `s.AccessorName` (set from `SubscriberFnName` in `TopicConfig`), falling back to `<StructName>Topic` when the field is empty.
+
+### `componentFuncNameFor`
+
+Returns the mount component function name for a topic struct. Prefers `s.ComponentFnName` (set from `ComponentFnName` in `TopicConfig`), falling back to `Add<StructName>Topic` when the field is empty.
 
 ---
 
@@ -980,13 +1379,13 @@ ClientSideState: func() {
 
 ---
 
-## Architectural constraint: WASM32 heap exhaustion on large context payloads
+## Architectural constraint: WASM32 heap exhaustion on large topic payloads
 
-This is a **known, unsolved architectural limitation** of TinyGo WASM32 + the Gothic context system. It is distinct from the `_values[]` JS-bridge leaks documented in Problem 2 above. The JS-bridge leaks have been fixed; this constraint cannot be fixed at the Gothic level.
+This is a **known, unsolved architectural limitation** of TinyGo WASM32 + the Gothic topic system. It is distinct from the `_values[]` JS-bridge leaks documented in Problem 2 above. The JS-bridge leaks have been fixed; this constraint cannot be fixed at the Gothic level.
 
 ### What happens
 
-Each Gothic WASM module runs inside the browser as a 32-bit WebAssembly binary. WASM32 has a hard **4 GB linear memory ceiling** — the entire address space is `[0, 2³²)` bytes. Go's heap lives inside that address space. When the context system broadcasts a large payload (e.g. a deeply-nested struct with 10 k+ items), the following happens on every broadcast:
+Each Gothic WASM module runs inside the browser as a 32-bit WebAssembly binary. WASM32 has a hard **4 GB linear memory ceiling** — the entire address space is `[0, 2³²)` bytes. Go's heap lives inside that address space. When the topic system broadcasts a large payload (e.g. a deeply-nested struct with 10 k+ items), the following happens on every broadcast:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -1014,7 +1413,7 @@ Go's GC reclaims allocations between broadcasts, so the **live set** stays flat.
 
 ### The broadcast pipeline (per-field)
 
-Every call to `ctx.Set(largeStruct)` triggers this pipeline:
+Every call to `topic.Set(largeStruct)` triggers this pipeline:
 
 ```
 Go (consumer WASM)                       Manager WASM               JS (browser)
@@ -1085,8 +1484,8 @@ The `_values[]` fixes (Problem 2 above) address a different layer: they eliminat
 
 | Symptom | Layer | Fixed? |
 |---------|-------|--------|
-| `_values[]` grows without bound | JS heap (V8) | ✅ Yes — Problem 2 fixes |
-| Chrome RSS grows after large broadcasts | WASM32 linear memory (Go heap) | ❌ No — architectural |
+| `_values[]` grows without bound | JS heap (V8) | Yes — Problem 2 fixes |
+| Chrome RSS grows after large broadcasts | WASM32 linear memory (Go heap) | No — architectural |
 
 ### Why WASM64 does NOT solve this
 
@@ -1098,11 +1497,11 @@ Two mitigations are implemented:
 
 **Per-field subscriptions** — instead of broadcasting the full struct on every mutation, each field gets its own event key (`gothic:context:<key>:<field>`). A module observing only `Theme` allocates only Theme's wire bytes per click. The full struct only crosses the bridge on ping responses (boot hydration), not per click.
 
-**Design constraint** — context is designed for UI state: selected tab, theme, user info, feature flags — payloads in bytes to low kilobytes. If your encoded context payload exceeds ~100 kB, treat it as a design smell. Split the struct, paginate, or move large data to a server-side endpoint. At 100 kB and below, the heap-pressure ratchet is slow enough that normal page navigation (which unloads and resets the WASM module) prevents any real accumulation.
+**Design constraint** — topics are designed for UI state: selected tab, theme, user info, feature flags — payloads in bytes to low kilobytes. If your encoded topic payload exceeds ~100 kB, treat it as a design smell. Split the struct, paginate, or move large data to a server-side endpoint. At 100 kB and below, the heap-pressure ratchet is slow enough that normal page navigation (which unloads and resets the WASM module) prevents any real accumulation.
 
 ### What to watch for in your app
 
-If you use the context system with large structs, monitor Chrome Task Manager's "Memory" column during development. If it climbs monotonically with each context broadcast, you are hitting this constraint. The `_values[]` counter is **not** a useful signal here — it will stay flat (the JS-bridge leaks are fixed), while RSS still grows.
+If you use the topic system with large structs, monitor Chrome Task Manager's "Memory" column during development. If it climbs monotonically with each topic broadcast, you are hitting this constraint. The `_values[]` counter is **not** a useful signal here — it will stay flat (the JS-bridge leaks are fixed), while RSS still grows.
 
 The `unreachable` trap is the dramatic end-state; the subtler version — Chrome RSS climbing to 2–3 GB and slowing down — happens well before the crash and is the real user-facing problem in long-running sessions.
 
@@ -1125,21 +1524,21 @@ from `wasm_topic_manager_main.go.tmpl`. It is mounted once per page via
   `ListenCtxSetReqField(key, field, fn)`. On each one it writes
   `_fields[field] = b`, re-broadcasts the field event, and marks `_wholeDirty`.
 - Listens to **whole-struct** set-requests via `ListenCtxSetReq(key, fn)` —
-  used by `ctx.Set(struct)` fan-out. It runs a **zero-allocation diff loop**
+  used by `topic.Set(struct)` fan-out. It runs a **zero-allocation diff loop**
   (see below) to broadcast only changed fields, then updates the JS store.
 - Broadcasts the whole-struct online ack on `ListenCtxPing` and at boot.
   Consumers only get a full `gothic:ctx-online` event on pings; per-mutation
   traffic is per-field events only.
 
 Consumer pages never write canonical state directly — they always dispatch a
-`RequestCtxSetField` (or the whole-struct fan-out from `ctx.Set`) and wait for
+`RequestCtxSetField` (or the whole-struct fan-out from `topic.Set`) and wait for
 the manager's broadcast to come back through `ApplyExternal`.
 
 > **Note:** The JS wire event names (`gothic:context:`, `gothic:ctx-req:`, `gothic:ctx-online:`, `gothic:ctx-ping:`) are stable wire-protocol identifiers and are intentionally kept as-is.
 
 ### `ListenCtxSetReq` diff loop — zero-allocation field comparison
 
-When `ctx.Set(struct)` is called by a consumer, it encodes the whole struct and
+When `topic.Set(struct)` is called by a consumer, it encodes the whole struct and
 sends it as `gothic:ctx-req:<key>`. The manager's handler decides which fields
 actually changed and broadcasts only those. The naive approach — decode
 the full struct then re-encode each field — allocates O(N) objects for every
@@ -1227,8 +1626,8 @@ T5 (startup race) is fully covered because `ReadCtxStore` reads the same JS map 
 
 | Trigger | Wire event | Direction | Handler |
 |---------|-----------|-----------|---------|
-| `ctx.Theme.Set("dark")` | `gothic:ctx-req:<key>:<field>` | consumer → manager | `ListenCtxSetReqField` |
-| `ctx.Set(struct)` | `gothic:ctx-req:<key>` | consumer → manager | `ListenCtxSetReq` (diff loop) |
+| `topic.Theme.Set("dark")` | `gothic:ctx-req:<key>:<field>` | consumer → manager | `ListenCtxSetReqField` |
+| `topic.Set(struct)` | `gothic:ctx-req:<key>` | consumer → manager | `ListenCtxSetReq` (diff loop) |
 | Manager broadcasts changed field | `gothic:context:<key>:<field>` | manager → all consumers | `ListenCtxEventField` |
 | Manager ping response / boot | `gothic:ctx-online:<key>` | manager → all consumers | `ListenCtxOnline` |
 | Consumer needs hydration | `gothic:ctx-ping:<key>` | consumer → manager | `ListenCtxPing` |
@@ -1237,7 +1636,7 @@ T5 (startup race) is fully covered because `ReadCtxStore` reads the same JS map 
 ```
 Consumer                  JS event bus              Manager
 ──────────────────────────────────────────────────────────────────
-ctx.Theme.Set("dark")
+topic.Theme.Set("dark")
   │ encode "dark" → bytes
   │ RequestCtxSetField ──▶ gothic:ctx-req:page:Theme ──▶ store bytes
   │                                                      broadcast field
@@ -1248,7 +1647,7 @@ ctx.Theme.Set("dark")
   ▼
 DOM updated
 
-ctx.Set(Page{...})
+topic.Set(Page{...})
   │ encode whole struct → bytes
   │ RequestCtxSet ──────▶ gothic:ctx-req:page ──────▶ _captureAllFields
   │                                                    diff each field
@@ -1263,7 +1662,7 @@ New page load
   │ ReadCtxStore("page") ─────────────────────────▶ JS map lookup
   │ ◀──────────────── whole-struct bytes ◀─────────  (always fresh)
   │ decode → apply all fields
-  │ ctx._online = true
+  │ topic._online = true
   │ — OR if store empty —
   │ PingUntilOnline ──────▶ gothic:ctx-ping:page ──▶ _broadcastOnline()
   │ ◀──── gothic:ctx-online:page ◀───────────────────  full hydration
@@ -1289,7 +1688,7 @@ The generated consumer template (`wasm_page_main.go.tmpl`) wraps every field's
 `BeginBatch()` / `EndBatch()` pair. Without batching, hydrating a 39-field
 struct fired 39 separate Observe notifications, each one re-running every
 subscriber's callback. With batching, the page sees one coalesced reactive
-update for the entire struct — a critical perf win when a single context push
+update for the entire struct — a critical perf win when a single topic push
 must not ratchet the WASM heap.
 
 ### Manager-side lazy rebuild (`_wholeDirty`)

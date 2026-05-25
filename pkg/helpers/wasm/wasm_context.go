@@ -171,12 +171,13 @@ func (h *WasmHelper) writeTopicKeyStubs(structs []structInfo, aliases map[string
 	_ = h.Template.UpdateFromTemplate(tmplTopicGen, outPath, data)
 }
 
-// topicMeta carries the (keyName, compression, accessorName) extracted from a CreateTopic
+// topicMeta carries the (keyName, compression, accessorName, componentFnName) extracted from a CreateTopic
 // call, indexed by the topic's underlying struct name.
 type topicMeta struct {
-	KeyName      string
-	Compression  WasmCompression
-	AccessorName string // the variable name from "var X = CreateTopic(...)"
+	KeyName         string
+	Compression     WasmCompression
+	AccessorName    string // the variable name from "var X = CreateTopic(...)"
+	ComponentFnName string // overrides Add<StructName>Topic mount helper name
 }
 
 // parseStructsFromSource parses struct definitions and type aliases from a Go source string.
@@ -242,6 +243,7 @@ func (h *WasmHelper) parseStructsFromSource(src string) (structs []structInfo, t
 					si.KeyName = meta.KeyName
 					si.Compression = meta.Compression
 					si.AccessorName = meta.AccessorName
+					si.ComponentFnName = meta.ComponentFnName
 				}
 				structs = append(structs, si)
 			}
@@ -321,8 +323,17 @@ func (h *WasmHelper) topicFuncNameFor(s structInfo) string {
 	return h.topicFuncName(s.Name)
 }
 
+// componentFuncNameFor returns the mount/component function name for a topic struct.
+// It prefers ComponentFnName when set, falling back to "Add" + topicFuncNameFor.
+func (h *WasmHelper) componentFuncNameFor(s structInfo) string {
+	if s.ComponentFnName != "" {
+		return s.ComponentFnName
+	}
+	return "Add" + h.topicFuncNameFor(s)
+}
+
 // collectCreateTopicMetas walks the AST for `var _ = CreateTopic(T{},
-// TopicConfig{Name: "...", Compression: "..."})` (or any assignment whose RHS
+// TopicConfig{Name: "...", Compression: BROTLI})` (or any assignment whose RHS
 // is such a call) and returns a map from the underlying struct type name T to
 // the extracted metadata.
 //
@@ -358,7 +369,7 @@ func collectCreateTopicMetas(f *ast.File) map[string]topicMeta {
 				if structName == "" {
 					continue
 				}
-				name, compression := parseTopicConfigArg(call.Args[1])
+				name, compression, subscriberFnName, componentFnName := parseTopicConfigArg(call.Args[1])
 				// Capture the var name (e.g. "PageTopic" from "var PageTopic = CreateTopic(...)").
 				// If the var is blank ("_") or missing, fall back to struct-derived name.
 				// No warning — blank identifier on disk is the CLI's own normalized form
@@ -369,7 +380,11 @@ func collectCreateTopicMetas(f *ast.File) map[string]topicMeta {
 						accessorName = n
 					}
 				}
-				metas[structName] = topicMeta{KeyName: name, Compression: compression, AccessorName: accessorName}
+				// SubscriberFnName overrides the accessor name when set.
+				if subscriberFnName != "" {
+					accessorName = subscriberFnName
+				}
+				metas[structName] = topicMeta{KeyName: name, Compression: compression, AccessorName: accessorName, ComponentFnName: componentFnName}
 			}
 		}
 		return true
@@ -415,9 +430,38 @@ func topicStructNameFromArg(arg ast.Expr) string {
 	return ""
 }
 
-// parseTopicConfigArg pulls Name and Compression from a TopicConfig composite
-// literal. Compression defaults to GZIP; "BROTLI" (case-insensitive) → brotli.
-func parseTopicConfigArg(arg ast.Expr) (name string, compression WasmCompression) {
+// parseCompressionExpr resolves a Compression field value expression to an
+// internal WasmCompression. Accepted forms:
+//
+//	"BROTLI"          — legacy string literal (backward compatible)
+//	BROTLI            — bare identifier (dot-import)
+//	wasm.BROTLI       — selector expression (qualified import)
+//
+// Anything else (including GZIP / wasm.GZIP) maps to the default WasmCompressionGzip.
+func parseCompressionExpr(expr ast.Expr) WasmCompression {
+	identName := ""
+	switch v := expr.(type) {
+	case *ast.BasicLit:
+		if v.Kind == token.STRING {
+			if unq, err := strconv.Unquote(v.Value); err == nil {
+				identName = strings.ToUpper(unq)
+			}
+		}
+	case *ast.Ident:
+		identName = strings.ToUpper(v.Name)
+	case *ast.SelectorExpr:
+		identName = strings.ToUpper(v.Sel.Name)
+	}
+	if identName == "BROTLI" {
+		return WasmCompressionBrotli
+	}
+	return WasmCompressionGzip
+}
+
+// parseTopicConfigArg pulls Name, Compression, SubscriberFnName, and ComponentFnName
+// from a TopicConfig composite literal. Compression defaults to GZIP; "BROTLI"
+// (case-insensitive) → brotli.
+func parseTopicConfigArg(arg ast.Expr) (name string, compression WasmCompression, subscriberFnName string, componentFnName string) {
 	compression = WasmCompressionGzip
 	cl, ok := arg.(*ast.CompositeLit)
 	if !ok {
@@ -440,11 +484,17 @@ func parseTopicConfigArg(arg ast.Expr) (name string, compression WasmCompression
 				}
 			}
 		case "Compression":
+			compression = parseCompressionExpr(kv.Value)
+		case "SubscriberFnName":
 			if bl, ok := kv.Value.(*ast.BasicLit); ok && bl.Kind == token.STRING {
 				if unq, err := strconv.Unquote(bl.Value); err == nil {
-					if strings.EqualFold(unq, "BROTLI") {
-						compression = WasmCompressionBrotli
-					}
+					subscriberFnName = unq
+				}
+			}
+		case "ComponentFnName":
+			if bl, ok := kv.Value.(*ast.BasicLit); ok && bl.Kind == token.STRING {
+				if unq, err := strconv.Unquote(bl.Value); err == nil {
+					componentFnName = unq
 				}
 			}
 		}

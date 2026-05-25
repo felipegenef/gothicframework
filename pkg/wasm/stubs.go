@@ -193,12 +193,22 @@ func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decode
 // Server-side this is a no-op stub so the code compiles.
 func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name} }
 
+// Compression is the compression algorithm used for a topic's WASM payload.
+type Compression int
+
+const (
+	GZIP   Compression = iota // default
+	BROTLI Compression = iota
+)
+
 // TopicConfig holds per-topic configuration. The CLI AST scanner reads the
 // Name and Compression fields from CreateTopic call sites to drive code
 // generation.
 type TopicConfig struct {
-	Name        string
-	Compression string // "GZIP" or "BROTLI"; defaults to "GZIP"
+	Name             string
+	Compression      Compression // GZIP (default) or BROTLI
+	SubscriberFnName string      // overrides generated accessor func name (default: <StructName>Topic)
+	ComponentFnName  string      // overrides generated mount component func name (default: Add<StructName>Topic)
 }
 
 // CreateTopic declares a topic. The CLI AST scanner detects this call and

@@ -117,11 +117,12 @@ type WasmTopicManagerMainData struct {
 // structInfo / fieldInfo are the parsed representation of src/topics/*.go.
 
 type structInfo struct {
-	Name         string
-	KeyName      string
-	Compression  WasmCompression
-	Fields       []fieldInfo
-	AccessorName string // var name from "var X = CreateTopic(...)", falls back to struct-derived name
+	Name            string
+	KeyName         string
+	Compression     WasmCompression
+	Fields          []fieldInfo
+	AccessorName    string // var name from "var X = CreateTopic(...)", falls back to struct-derived name
+	ComponentFnName string // overrides Add<StructName>Topic mount helper name
 }
 
 type fieldInfo struct {

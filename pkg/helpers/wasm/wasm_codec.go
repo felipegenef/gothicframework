@@ -726,7 +726,7 @@ func (h *WasmHelper) buildMountFnData(structs []structInfo) []MountFnData {
 			compressionConst = "routes.BROTLI"
 		}
 		result = append(result, MountFnData{
-			FuncName:         "Add" + h.topicFuncNameFor(s),
+			FuncName:         h.componentFuncNameFor(s),
 			WasmName:         "topic-" + s.KeyName,
 			Compression:      s.Compression,
 			CompressionConst: compressionConst,

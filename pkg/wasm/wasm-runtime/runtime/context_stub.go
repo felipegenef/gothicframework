@@ -6,10 +6,20 @@ import (
 	"strconv"
 )
 
+// Compression is the compression algorithm used for a topic's WASM payload.
+type Compression int
+
+const (
+	GZIP   Compression = iota // default
+	BROTLI Compression = iota
+)
+
 // TopicConfig holds per-topic configuration.
 type TopicConfig struct {
-	Name        string
-	Compression string // "GZIP" or "BROTLI"; defaults to "GZIP"
+	Name             string
+	Compression      Compression // GZIP (default) or BROTLI
+	SubscriberFnName string      // overrides generated accessor func name (default: <StructName>Topic)
+	ComponentFnName  string      // overrides generated mount component func name (default: Add<StructName>Topic)
 }
 
 // CreateTopic declares a topic. The CLI AST scanner detects this call and
