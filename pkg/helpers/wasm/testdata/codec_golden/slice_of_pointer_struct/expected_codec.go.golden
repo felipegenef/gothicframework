@@ -1,0 +1,10 @@
+// === Wrap ===
+// ENCODE Items:
+{ e.U32(uint32(len(v.Items))); for _, _item := range v.Items { if _item == nil { e.U8(0) } else { e.U8(1); _encode_MyStruct(*_item, e) } } }
+// DECODE Items:
+{ _n := int(d.U32()); v.Items = make([]*MyStruct, _n); for _i := range v.Items { if d.U8() != 0 { _sv := _decode_MyStruct(d); v.Items[_i] = &_sv } } }
+// === MyStruct ===
+// ENCODE X:
+e.I64(int64(v.X))
+// DECODE X:
+v.X = int(d.I64())

@@ -44,6 +44,8 @@ type HotReloadCommand struct {
 	excludedDirs      []string
 	watchedExtensions []string
 	excludeRegex      regexp.Regexp
+	debounceTimer     *time.Timer
+	debounceMu        sync.Mutex
 }
 
 func newHotReloadCommandCli(cli *gothic_cli.GothicCli) HotReloadCommand {
@@ -56,7 +58,7 @@ func newHotReloadCommandCli(cli *gothic_cli.GothicCli) HotReloadCommand {
 		mainBinaryName:    mainBinary,
 		excludedDirs:      []string{"assets", "tmp", "vendor", "public", "routes"},
 		watchedExtensions: []string{".go", ".tpl", ".tmpl", ".templ", ".html"},
-		excludeRegex:      *regexp.MustCompile(`.*_templ\.go$`),
+		excludeRegex:      *regexp.MustCompile(`.*_templ\.go$|.*_gen\.go$`),
 	}
 }
 
@@ -70,11 +72,16 @@ func newHotReloadCommand(cli gothic_cli.GothicCli) RunEFunc {
 
 func (command *HotReloadCommand) HotReload() error {
 	godotenv.Load()
-	// Load config to pick up tailwindBinary override if present
+	// Load config to pick up binary overrides if present
 	command.cli.GetConfig()
 	// Ensure tailwind binary is available before starting watch
 	if _, err := command.cli.Tailwind.EnsureBinary(); err != nil {
 		return fmt.Errorf("error resolving tailwind binary: %w", err)
+	}
+	// Ensure TinyGo is installed before any goroutines start — avoids a
+	// race between the download and the first rebuild() call.
+	if err := command.cli.Wasm.EnsureBinary(); err != nil {
+		return fmt.Errorf("error resolving tinygo binary: %w", err)
 	}
 	port := os.Getenv("HTTP_LISTEN_ADDR")
 	if port == "" {
@@ -159,7 +166,7 @@ func (command *HotReloadCommand) watchForChanges() {
 				return
 			}
 			if command.shouldHandle(event.Name, event.Op) {
-				command.rebuild()
+				command.scheduleRebuild()
 			}
 			// Dynamically watch new directories
 			if event.Op&fsnotify.Create == fsnotify.Create {
@@ -174,9 +181,8 @@ func (command *HotReloadCommand) watchForChanges() {
 				}
 			}
 		case err, ok := <-watcher.Errors:
-			command.rebuild()
 			if !ok {
-				fmt.Printf("error reloading app: %v", err)
+				return
 			}
 			log.Println("Watcher error:", err)
 		}
@@ -227,6 +233,18 @@ func (command *HotReloadCommand) watchTailwindChanges() {
 	}()
 }
 
+// scheduleRebuild coalesces rapid fsnotify events (e.g. WRITE+CHMOD from a
+// single editor save) into a single rebuild. The timer resets on each event;
+// the rebuild fires 150ms after the last event in the burst.
+func (command *HotReloadCommand) scheduleRebuild() {
+	command.debounceMu.Lock()
+	defer command.debounceMu.Unlock()
+	if command.debounceTimer != nil {
+		command.debounceTimer.Stop()
+	}
+	command.debounceTimer = time.AfterFunc(150*time.Millisecond, command.rebuild)
+}
+
 func (command *HotReloadCommand) rebuild() {
 	command.mutex.Lock()
 	defer command.mutex.Unlock()
@@ -247,6 +265,9 @@ func (command *HotReloadCommand) rebuild() {
 		fmt.Printf("error building templ: %v", err)
 		return
 	}
+
+	// WASM must finish before restarting the app — browser reloads immediately after.
+	command.buildWasmAll()
 
 	log.Println("Build app...")
 	buildCmd := exec.Command("go", "build", "-o", command.mainBinaryName, "main.go")
@@ -280,6 +301,34 @@ func (command *HotReloadCommand) rebuild() {
 		}
 	}()
 
+}
+
+func (command *HotReloadCommand) buildWasmAll() {
+	command.cli.Wasm.PregenerateTopicStubs()
+	pages, err := command.cli.Wasm.ScanPages("src/pages", "src/components")
+	if err != nil {
+		wasmErrorf("scan failed: %v", err)
+		return
+	}
+	if len(pages) == 0 {
+		return
+	}
+	var nPages, nComponents int
+	for _, p := range pages {
+		if p.IsComponent {
+			nComponents++
+		} else {
+			nPages++
+		}
+	}
+	topics := command.cli.Wasm.CountTopicManagers()
+	wasmLogf("building %s, %s, %s...",
+		wasmCount(nPages, "page(s)"),
+		wasmCount(nComponents, "component(s)"),
+		wasmCount(topics, "topic manager(s)"))
+	if err := command.cli.Wasm.GenerateAll(pages, "public/wasm"); err != nil {
+		wasmErrorf("build failed (continuing with stale binaries): %v", err)
+	}
 }
 
 func (command *HotReloadCommand) openBrowser(url string) error {

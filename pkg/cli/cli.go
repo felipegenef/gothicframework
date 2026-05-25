@@ -8,9 +8,10 @@ import (
 	"os/exec"
 	"runtime"
 
-	helpers "github.com/felipegenef/gothicframework/pkg/helpers"
-	proxy "github.com/felipegenef/gothicframework/pkg/helpers/proxy"
-	routes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+	helpers     "github.com/felipegenef/gothicframework/pkg/helpers"
+	proxy       "github.com/felipegenef/gothicframework/pkg/helpers/proxy"
+	routes      "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+	wasmhelper  "github.com/felipegenef/gothicframework/pkg/helpers/wasm"
 )
 
 type GothicCli struct {
@@ -26,6 +27,7 @@ type GothicCli struct {
 	AWS             helpers.AwsHelper
 	FileBasedRouter routes.FileBasedRouteHelper
 	Proxy           proxy.ProxyHelper
+	Wasm            wasmhelper.WasmHelper
 }
 
 type CliCommands struct {
@@ -50,6 +52,7 @@ func NewCli() GothicCli {
 		Logger:          helpers.NewLogger("error", false, os.Stdout),
 		FileBasedRouter: routes.NewFileBasedRouteHelper(),
 		Proxy:           proxy.NewProxyHelper(),
+		Wasm:            wasmhelper.NewWasmHelper(runtime.GOOS, runtime.GOARCH),
 	}
 
 	return cli
@@ -87,6 +90,12 @@ func (cli *GothicCli) GetConfig() (Config, error) {
 	}
 	if config.TailwindBinary != "" {
 		cli.Tailwind.ConfigOverride = config.TailwindBinary
+	}
+	if config.WasmTinyGoVersion != "" {
+		cli.Wasm.Version = config.WasmTinyGoVersion
+	}
+	if config.WasmBinary != "" {
+		cli.Wasm.ConfigOverride = config.WasmBinary
 	}
 	cli.config = &config
 	return config, nil

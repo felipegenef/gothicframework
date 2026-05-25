@@ -2,8 +2,10 @@ package helpers
 
 import (
 	"bytes"
+	"context"
 	"encoding/gob"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -36,11 +38,32 @@ const (
 	DELETE
 )
 
+// WasmCompiler selects the WASM build toolchain for a route.
+type WasmCompiler int
+
+const (
+	GothicTinyGo WasmCompiler = iota // default: embedded TinyGo binary
+	LocalTinyGo                      // system tinygo binary in PATH
+	Golang                           // GOOS=js GOARCH=wasm standard Go compiler
+)
+
 type RouteConfig[T any] struct {
 	Type            ConfigType
 	HttpMethod      HttpMethod
 	RevalidateInSec int
 	Middleware      func(w http.ResponseWriter, r *http.Request) T
+	// ClientSideState, if non-nil, marks this route as having a WASM reactive state
+	// function.  The CLI extracts the function body and compiles it with TinyGo.
+	// The function is never called server-side; it only needs to compile.
+	ClientSideState func()
+	// WasmCompression sets the compression algorithm for the compiled WASM output.
+	// Defaults to GZIP (zero value). Options: GZIP, BROTLI.
+	WasmCompression CompressionMethod
+	// WasmCompiler selects the WASM build toolchain. Defaults to GothicTinyGo.
+	WasmCompiler WasmCompiler
+	// Path is the HTTP route path, set automatically by RegisterRoute.
+	// Use it with StatefulComponentOf to avoid hardcoding path strings.
+	Path string
 }
 
 var DefaultConfig = RouteConfig[any]{
@@ -57,7 +80,17 @@ var DefaultApiConfig = ApiRouteConfig{
 }
 
 func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, component func(T) templ.Component) {
-	handler := config.resolveHandler(component)
+	config.Path = httpPath
+	wrapped := component
+	if config.ClientSideState != nil {
+		wasmName := WasmOutputName(httpPath)
+		compression := config.WasmCompression
+		compiler := config.WasmCompiler
+		wrapped = func(props T) templ.Component {
+			return &wasmInjectedComponent{inner: component(props), wasmName: wasmName, compression: compression, compiler: compiler}
+		}
+	}
+	handler := config.resolveHandler(wrapped)
 
 	switch config.HttpMethod {
 	case GET:
@@ -72,6 +105,36 @@ func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, compo
 		r.Delete(httpPath, handler)
 	}
 }
+
+// wasmInjectedComponent wraps a templ.Component and injects the WASM bootstrap
+// script before </body> in the rendered HTML.
+type wasmInjectedComponent struct {
+	inner       templ.Component
+	wasmName    string
+	compression CompressionMethod
+	compiler    WasmCompiler
+}
+
+func (c *wasmInjectedComponent) Render(ctx context.Context, w io.Writer) error {
+	var buf bytes.Buffer
+	if err := c.inner.Render(ctx, &buf); err != nil {
+		return err
+	}
+	_, err := w.Write(injectWasmEnvelope(buf.Bytes(), c.wasmName, c.compression, c.compiler))
+	return err
+}
+
+// emptyComponent renders nothing — used as the inner component for topic managers.
+type emptyComponent struct{}
+
+func (emptyComponent) Render(_ context.Context, _ io.Writer) error { return nil }
+
+// TopicManagerComponent returns a templ.Component that loads the named topic-manager
+// WASM inline (no HTMX round-trip). Drop it in any layout or page with @wasm.AddPageTopic().
+func TopicManagerComponent(wasmName string, compression CompressionMethod) templ.Component {
+	return &wasmInjectedComponent{inner: emptyComponent{}, wasmName: wasmName, compression: compression, compiler: GothicTinyGo}
+}
+
 
 func (config *RouteConfig[T]) resolveHandler(component func(T) templ.Component) http.HandlerFunc {
 	switch config.Type {
@@ -315,33 +378,23 @@ type TemplateInfo struct {
 }
 
 type FileBasedRouteHelper struct {
-	TemplateInfo            TemplateInfo
-	PackageRegex            *regexp.Regexp
-	RouteConfigNameRegex    *regexp.Regexp
-	ApiRouteConfigNameRegex *regexp.Regexp
-	RouteFuncNameRegex      *regexp.Regexp
-	ApiRouteFuncNameRegex   *regexp.Regexp
-	OutputFile              string
-	TemplateFile            string
-	ApiRoutesFolder         string
-	ComponentRoutesFolder   string
-	PageRoutesFolder        string
-	Template                helpers.TemplateHelper
+	TemplateInfo          TemplateInfo
+	OutputFile            string
+	TemplateFile          string
+	ApiRoutesFolder       string
+	ComponentRoutesFolder string
+	PageRoutesFolder      string
+	Template              helpers.TemplateHelper
 }
 
 func NewFileBasedRouteHelper() FileBasedRouteHelper {
 	return FileBasedRouteHelper{
-		OutputFile:              "./src/routes/autoGenRoutes.go",
-		TemplateFile:            "./.gothicCli/templates/autoGenRoutes.go",
-		ApiRoutesFolder:         "./src/api",
-		ComponentRoutesFolder:   "./src/components",
-		PageRoutesFolder:        "./src/pages",
-		PackageRegex:            regexp.MustCompile(`(?m)^package\s+(\w+)`),
-		RouteConfigNameRegex:    regexp.MustCompile(`(?m)^var\s+(\w+)\s*=\s*routes\.RouteConfig\[[^\]]+\]\s*{([^}]*)}`),
-		ApiRouteConfigNameRegex: regexp.MustCompile(`(?m)^var\s+(\w+)\s*=\s*routes\.ApiRouteConfig\s*{([^}]+)}`),
-		RouteFuncNameRegex:      regexp.MustCompile(`(?m)^func\s+(\w+)\s*\(.*\)\s+templ\.Component\s*{`),
-		ApiRouteFuncNameRegex:   regexp.MustCompile(`(?m)^func\s+(\w+)\s*\(.*\)\s*{`),
-		Template:                helpers.NewTemplateHelper(),
+		OutputFile:            "./src/routes/routes_gen.go",
+		TemplateFile:          "./.gothicCli/templates/routes_gen.go",
+		ApiRoutesFolder:       "./src/api",
+		ComponentRoutesFolder: "./src/components",
+		PageRoutesFolder:      "./src/pages",
+		Template:              helpers.NewTemplateHelper(),
 	}
 }
 
@@ -377,15 +430,16 @@ func (helper *FileBasedRouteHelper) collectApiRoutesInfo(goModName string) error
 			route.OriginFile = path
 			route.ConfigName = "DefaultApiConfig"
 			route.ConfigPackageName = "routes"
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("failed to read file %s: %w", path, err)
+
+			scan, scanErr := astScanFile(path)
+			if scanErr != nil {
+				// Mid-edit / malformed source: skip silently, matching prior regex behavior.
+				return nil
 			}
 
-			packageMatch := helper.PackageRegex.FindStringSubmatch(string(content))
-			if len(packageMatch) > 1 {
-				route.PackageName = packageMatch[1]
-				route.ConfigPackageName = packageMatch[1]
+			if scan.PackageName != "" {
+				route.PackageName = scan.PackageName
+				route.ConfigPackageName = scan.PackageName
 				relPath, err := filepath.Rel("src", filepath.Dir(path))
 				if err != nil {
 					return fmt.Errorf("failed to get relative import path for %s: %w", path, err)
@@ -397,17 +451,15 @@ func (helper *FileBasedRouteHelper) collectApiRoutesInfo(goModName string) error
 				helper.TemplateInfo.Imports = append(helper.TemplateInfo.Imports, importStruct)
 			}
 
-			configMatch := helper.ApiRouteConfigNameRegex.FindStringSubmatch(string(content))
-			if len(configMatch) > 1 {
-				route.ConfigName = configMatch[1]
+			if scan.ApiRouteConfigName != "" {
+				route.ConfigName = scan.ApiRouteConfigName
 			} else {
 				route.ConfigName = "DefaultApiConfig"
 				route.ConfigPackageName = "routes"
 			}
 
-			funcMatch := helper.ApiRouteFuncNameRegex.FindStringSubmatch(string(content))
-			if len(funcMatch) > 1 {
-				route.FunctionName = funcMatch[1]
+			if scan.ApiFuncName != "" {
+				route.FunctionName = scan.ApiFuncName
 			}
 
 			route.HttpPath = helper.normalizeHttpPath(path)
@@ -433,15 +485,15 @@ func (helper *FileBasedRouteHelper) collectComponentsInfo(goModName string) erro
 			route.OriginFile = path
 			route.ConfigName = "DefaultConfig"
 			route.ConfigPackageName = "routes"
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("failed to read file %s: %w", path, err)
+
+			scan, scanErr := astScanFile(path)
+			if scanErr != nil {
+				return nil
 			}
 
-			packageMatch := helper.PackageRegex.FindStringSubmatch(string(content))
-			if len(packageMatch) > 1 {
-				route.PackageName = packageMatch[1]
-				route.ConfigPackageName = packageMatch[1]
+			if scan.PackageName != "" {
+				route.PackageName = scan.PackageName
+				route.ConfigPackageName = scan.PackageName
 				relPath, err := filepath.Rel("src", filepath.Dir(path))
 				if err != nil {
 					return fmt.Errorf("failed to get relative import path for %s: %w", path, err)
@@ -453,17 +505,15 @@ func (helper *FileBasedRouteHelper) collectComponentsInfo(goModName string) erro
 				helper.TemplateInfo.Imports = append(helper.TemplateInfo.Imports, importStruct)
 			}
 
-			configMatch := helper.RouteConfigNameRegex.FindStringSubmatch(string(content))
-			if len(configMatch) > 1 {
-				route.ConfigName = configMatch[1]
+			if scan.RouteConfigName != "" {
+				route.ConfigName = scan.RouteConfigName
 			} else {
 				route.ConfigName = "DefaultConfig"
 				route.ConfigPackageName = "routes"
 			}
 
-			funcMatch := helper.RouteFuncNameRegex.FindStringSubmatch(string(content))
-			if len(funcMatch) > 1 {
-				route.FunctionName = funcMatch[1]
+			if scan.RouteFuncName != "" {
+				route.FunctionName = scan.RouteFuncName
 			}
 
 			route.HttpPath = helper.normalizeHttpPath(path)
@@ -489,15 +539,15 @@ func (helper *FileBasedRouteHelper) collectPageInfo(goModName string) error {
 			route.OriginFile = path
 			route.ConfigName = "DefaultConfig"
 			route.ConfigPackageName = "routes"
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("failed to read file %s: %w", path, err)
+
+			scan, scanErr := astScanFile(path)
+			if scanErr != nil {
+				return nil
 			}
 
-			packageMatch := helper.PackageRegex.FindStringSubmatch(string(content))
-			if len(packageMatch) > 1 {
-				route.PackageName = packageMatch[1]
-				route.ConfigPackageName = packageMatch[1]
+			if scan.PackageName != "" {
+				route.PackageName = scan.PackageName
+				route.ConfigPackageName = scan.PackageName
 				relPath, err := filepath.Rel("src", filepath.Dir(path))
 				if err != nil {
 					return fmt.Errorf("failed to get relative import path for %s: %w", path, err)
@@ -509,17 +559,15 @@ func (helper *FileBasedRouteHelper) collectPageInfo(goModName string) error {
 				helper.TemplateInfo.Imports = append(helper.TemplateInfo.Imports, importStruct)
 			}
 
-			configMatch := helper.RouteConfigNameRegex.FindStringSubmatch(string(content))
-			if len(configMatch) > 1 {
-				route.ConfigName = configMatch[1]
+			if scan.RouteConfigName != "" {
+				route.ConfigName = scan.RouteConfigName
 			} else {
 				route.ConfigName = "DefaultConfig"
 				route.ConfigPackageName = "routes"
 			}
 
-			funcMatch := helper.RouteFuncNameRegex.FindStringSubmatch(string(content))
-			if len(funcMatch) > 1 {
-				route.FunctionName = funcMatch[1]
+			if scan.RouteFuncName != "" {
+				route.FunctionName = scan.RouteFuncName
 			}
 
 			route.HttpPath = helper.normalizeHttpPath(path)
@@ -606,7 +654,7 @@ func (helper *FileBasedRouteHelper) normalizeHttpPath(path string) string {
 
 	// Convert var_param__ to {param} ONLY for HTTP routes
 	if isHttpRoute {
-		re := regexp.MustCompile(`var_([a-zA-Z0-9_]+)`)
+		re := regexp.MustCompile(`\bvar_([a-zA-Z_][a-zA-Z0-9_]*)\b`)
 		path = re.ReplaceAllString(path, `{$1}`)
 	}
 

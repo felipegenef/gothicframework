@@ -28,6 +28,12 @@ var reloadScriptJS string
 
 var errBodyNotFound = fmt.Errorf("body not found")
 
+// proxyStartedAt is a per-process timestamp used as a cache-buster for public
+// assets in the proxy-injected HTML. Every `make dev` restart produces a new
+// value, forcing the browser to fetch fresh CSS/JS instead of serving a stale
+// cached version whose URL hasn't changed.
+var proxyStartedAt = strconv.FormatInt(time.Now().UnixNano(), 10)
+
 type ProxyHelper struct {
 	URL    string
 	Target *url.URL
@@ -238,6 +244,11 @@ func (rt *roundTripper) setShouldSkipResponseModificationHeader(r *http.Request,
 
 // Modify response to inject script and handle encoding
 func (proxy *ProxyHelper) modifyResponse(r *http.Response) error {
+	// Disable caching for all dev proxy responses — same effect as DevTools "Disable cache".
+	r.Header.Set("Cache-Control", "no-store, must-revalidate")
+	r.Header.Del("ETag")
+	r.Header.Del("Last-Modified")
+
 	urlStr := r.Request.URL.String()
 
 	if r.Header.Get("gothic-framework-skip-modify") == "true" {
@@ -332,12 +343,42 @@ func (proxy *ProxyHelper) insertScriptTagIntoBody(nonce, body string) (string, e
 		return body, errBodyNotFound
 	}
 	bodyNodes[0].AppendChild(proxy.newReloadScriptNode(nonce))
+	proxy.bustPublicAssetCache(doc)
 
 	var buf bytes.Buffer
 	if err := html.Render(&buf, doc); err != nil {
 		return body, err
 	}
 	return buf.String(), nil
+}
+
+// bustPublicAssetCache rewrites href/src attributes that point to /public/ to
+// include a per-process version query parameter. This forces the browser to
+// treat each server restart as a new URL, bypassing stale cached assets.
+func (proxy *ProxyHelper) bustPublicAssetCache(doc *html.Node) {
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "link":
+				for i, a := range n.Attr {
+					if a.Key == "href" && strings.HasPrefix(a.Val, "/public/") {
+						n.Attr[i].Val = a.Val + "?v=" + proxyStartedAt
+					}
+				}
+			case "script":
+				for i, a := range n.Attr {
+					if a.Key == "src" && strings.HasPrefix(a.Val, "/public/") {
+						n.Attr[i].Val = a.Val + "?v=" + proxyStartedAt
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
 }
 
 func (proxy *ProxyHelper) newReloadScriptNode(nonce string) *html.Node {

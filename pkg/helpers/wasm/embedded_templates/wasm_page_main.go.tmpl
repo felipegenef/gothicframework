@@ -1,0 +1,110 @@
+//go:build js && wasm
+// Code generated from {{.SourceFile}} — DO NOT EDIT.
+
+package main
+
+import (
+	. "wasm-runtime/runtime"
+{{range .StdImports}}	{{.}}
+{{end}})
+
+// ── auto-generated codecs (do not edit) ─────────────────────────────────
+{{range .Codecs}}
+func _encode_{{.Name}}(v {{.Name}}, e *Encoder) {
+{{range .Fields}}	{{.EncLine}}
+{{end}}}
+
+func _decode_{{.Name}}(d *Decoder) {{.Name}} {
+	var v {{.Name}}
+{{range .Fields}}	{{.DecLine}}
+{{end}}	return v
+}
+
+func _encode_slice{{.Name}}(v []{{.Name}}, e *Encoder) {
+	e.U32(uint32(len(v)))
+	for _, _item := range v { _encode_{{.Name}}(_item, e) }
+}
+
+func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
+	_n := int(d.U32())
+	v := make([]{{.Name}}, _n)
+	for _i := range v { v[_i] = _decode_{{.Name}}(d) }
+	return v
+}
+{{end}}
+{{range .KeyVars}}var {{.StructName}}Key = BinaryKey("{{.KeyName}}", _encode_{{.StructName}}, _decode_{{.StructName}})
+
+{{end}}
+{{range .TopicTypes}}type {{.TypeName}} struct {
+{{range .Fields}}	{{.Name}} *ObservableField[{{.Type}}]
+{{end}}	_online  bool
+	_pending string
+}
+
+{{end}}
+{{range .WasmFuncs}}{{$fn := .}}func {{.CtorName}}(initial ...{{.StructName}}) *{{.TypeName}} {
+	topic := &{{.TypeName}}{
+{{range .Fields}}		{{.Name}}: NewObservableField({{$fn.StructName}}{}.{{.Name}}),
+{{end}}		_pending: "",
+	}
+{{range .FieldCodecs}}	topic.{{.FieldName}}.SetBroadcast(func() {
+		if !topic._online {
+			return
+		}
+		v := {{$fn.StructName}}{ {{.FieldName}}: topic.{{.FieldName}}.Peek() }
+		e := NewEncoder(8)
+		{{.EncLines}}
+		RequestTopicSetField("{{$fn.KeyName}}", "{{.FieldName}}", string(e.Buf))
+	})
+{{end}}{{range .FieldCodecs}}	ListenTopicEventField("{{$fn.KeyName}}", "{{.FieldName}}", func(detail string) {
+		d := &Decoder{Buf: []byte(detail)}
+		var v {{$fn.StructName}}
+		{{.DecLines}}
+		topic.{{.FieldName}}.ApplyExternal(v.{{.FieldName}})
+	})
+{{end}}	if _stored, _ok := ReadTopicStore("{{$fn.KeyName}}"); _ok {
+		_init := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(_stored)})
+{{range .Fields}}		topic.{{.Name}}.ApplyExternal(_init.{{.Name}})
+{{end}}		topic._online = true
+	}
+	ListenTopicOnline("{{$fn.KeyName}}", func(detail string) {
+		decoded := _decode_{{$fn.StructName}}(&Decoder{Buf: []byte(detail)})
+		BeginBatch()
+{{range .Fields}}		topic.{{.Name}}.ApplyExternal(decoded.{{.Name}})
+{{end}}		EndBatch()
+		if !topic._online {
+			topic._online = true
+			if topic._pending != "" {
+				RequestTopicSet("{{$fn.KeyName}}", topic._pending)
+				topic._pending = ""
+			}
+		}
+	})
+	PingUntilOnline("{{$fn.KeyName}}", func() bool { return topic._online })
+	return topic
+}
+
+func (c *{{.TypeName}}) Set(v {{.StructName}}) {
+	e := NewEncoder(64)
+	_encode_{{$fn.StructName}}(v, e)
+	enc := string(e.Buf)
+	if c._online {
+		RequestTopicSet("{{$fn.KeyName}}", enc)
+	} else {
+		c._pending = enc
+	}
+}
+
+{{end}}
+{{range .TopicSnippets}}
+{{.}}
+
+{{end}}
+{{range .Helpers}}
+{{.}}
+
+{{end}}
+func main() {
+{{.Body}}
+	select {}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 	"text/template"
 )
 
@@ -104,6 +105,22 @@ func (helper *TemplateHelper) CreateFromTemplate(fileTemplate embed.FS, template
 	}
 
 	return nil
+}
+
+func (helper *TemplateHelper) RenderToString(fileTemplate embed.FS, templateFilePath string, templateStruct interface{}) (string, error) {
+	templateBytes, err := fs.ReadFile(fileTemplate, templateFilePath)
+	if err != nil {
+		return "", err
+	}
+	t, err := template.New(templateFilePath).Parse(string(templateBytes))
+	if err != nil {
+		return "", fmt.Errorf("parse template %s: %w", templateFilePath, err)
+	}
+	var buf strings.Builder
+	if err := t.Execute(&buf, templateStruct); err != nil {
+		return "", fmt.Errorf("execute template %s: %w", templateFilePath, err)
+	}
+	return buf.String(), nil
 }
 
 func (helper *TemplateHelper) CopyFile(filePath string, destinationPath string) error {

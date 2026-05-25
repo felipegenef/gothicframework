@@ -1,0 +1,10 @@
+// === Wrap ===
+// ENCODE M:
+{ e.U32(uint32(len(v.M))); for _k, _v := range v.M { e.String(string(_k)); _encode_Item(_v, e) } }
+// DECODE M:
+{ _n := int(d.U32()); v.M = make(map[string]Item, _n); for _i := 0; _i < _n; _i++ { var _k string; var _v Item; _k = string(d.String()); _v = _decode_Item(d); v.M[_k] = _v } }
+// === Item ===
+// ENCODE V:
+e.I64(int64(v.V))
+// DECODE V:
+v.V = int(d.I64())

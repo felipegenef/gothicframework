@@ -1,0 +1,5 @@
+// === Wrap ===
+// ENCODE Matrix:
+{ e.U32(uint32(len(v.Matrix))); for _k, _v := range v.Matrix { e.String(string(_k)); { e.U32(uint32(len(_v))); for _k2, _v2 := range _v { e.String(string(_k2)); e.I64(int64(_v2)) } } } }
+// DECODE Matrix:
+{ _n := int(d.U32()); v.Matrix = make(map[string]map[string]int, _n); for _i := 0; _i < _n; _i++ { var _k string; var _v map[string]int; _k = string(d.String()); { _n2 := int(d.U32()); _v = make(map[string]int, _n2); for _j := 0; _j < _n2; _j++ { var _k2 string; var _v2 int; _k2 = string(d.String()); _v2 = int(d.I64()); _v[_k2] = _v2 } }; v.Matrix[_k] = _v } }

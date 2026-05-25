@@ -39,6 +39,9 @@ node_modules
 tmp
 optimize/*
 public/styles.css
+public/wasm/
+.gothicCli/wasm-cache.json
+.gothicCli/templ-cache.json
 template.yaml
 samconfig.toml
 Dockerfile`
@@ -51,9 +54,9 @@ type GothicCliData struct {
 	CustomTemplateBasedPages      map[string]string
 	CustomTemplateBasedComponents map[string]string
 	CustomTemplateBasedRoutes     map[string]string
-	GitIgnore   string
-	Env         string
-	GoticConfig embed.FS
+	GitIgnore                     string
+	Env                           string
+	GoticConfig                   embed.FS
 	Readme                        embed.FS
 	MakeFile                      embed.FS
 	SrcFolder                     embed.FS
@@ -71,14 +74,17 @@ var DefaultCLIData = GothicCliData{
 		"public/styles.css":                publicFolder,
 	},
 	TemplateFiles: map[string]embed.FS{
-		".gothicCli/templates/Dockerfile-template":     templatesFolder,
-		".gothicCli/templates/samconfig-template.toml": templatesFolder,
-		".gothicCli/templates/sam-template.yaml":       templatesFolder,
-		".gothicCli/templates/autoGenRoutes.go":        templatesFolder,
+		".gothicCli/templates/Dockerfile-template":             templatesFolder,
+		".gothicCli/templates/samconfig-template.toml":         templatesFolder,
+		".gothicCli/templates/sam-template.yaml":               templatesFolder,
+		".gothicCli/templates/routes_gen.go":                   templatesFolder,
+		".gothicCli/templates/wasm/topic_gen.go":               templatesFolder,
+		".gothicCli/templates/wasm/wasm_page_main.go":          templatesFolder,
+		".gothicCli/templates/wasm/wasm_topic_manager_main.go": templatesFolder,
 	},
 	InitialFiles: map[string]embed.FS{
 		// route files
-		"src/routes/autoGenRoutes.go": srcFolder,
+		"src/routes/routes_gen.go": srcFolder,
 		// page files
 		"src/pages/index.templ":      srcFolder,
 		"src/pages/revalidate.templ": srcFolder,
