@@ -17,7 +17,7 @@ import (
 // into the generated WASM main.go. Two rewrites today:
 //
 //  1. rewriteAutoKeys — `AutoKey[T]("name")` → `BinaryKey[T]("name", _encode_T, _decode_T)`.
-//  2. rewriteContextCalls — `UseContext(MyKey, MyCtx{...})` → `MyContext(MyCtx{...})`.
+//  2. rewriteTopicCalls — `UseTopic(MyKey, MyCtx{...})` → `MyTopic(MyCtx{...})`.
 //
 // The implementation is AST-based (handles arbitrary whitespace, multi-line
 // calls, nested generic type arguments like `map[string]int`). Parse failures
@@ -192,27 +192,27 @@ func normalizeTypeIdent(s string) string {
 	return b.String()
 }
 
-// rewriteContextCalls rewrites the four legacy "use the context X" spellings
-// inside src to the canonical `<Name>Context(...)` constructor call. The
+// rewriteTopicCalls rewrites the four legacy "use the topic X" spellings
+// inside src to the canonical `<Name>Topic(...)` constructor call. The
 // input is the body of a `ClientSideState` function (no package, no func
 // header). We wrap it as `package _x; func _f() { ... }` for parsing.
 //
 // The four spellings handled per struct s (with KeyName != ""):
 //
-//	UseContext(<Name>Key, <Name>{...})  → <Name>Context(<Name>{...})
-//	UseContext(<Name>{...})             → <Name>Context(<Name>{...})
-//	Use<Name>(<Name>{...})              → <Name>Context(<Name>{...})
-//	Use<Name>Context(<Name>{...})       → <Name>Context(<Name>{...})
+//	UseTopic(<Name>Key, <Name>{...})  → <Name>Topic(<Name>{...})
+//	UseTopic(<Name>{...})             → <Name>Topic(<Name>{...})
+//	Use<Name>(<Name>{...})            → <Name>Topic(<Name>{...})
+//	Use<Name>Topic(<Name>{...})       → <Name>Topic(<Name>{...})
 //
 // On AST-parse failure we return a positioned error so the caller can abort.
-func (h *WasmHelper) rewriteContextCalls(src string, structs []structInfo) (string, error) {
-	return astRewriteContextCalls(src, structs)
+func (h *WasmHelper) rewriteTopicCalls(src string, structs []structInfo) (string, error) {
+	return astRewriteTopicCalls(src, structs)
 }
 
-// astRewriteContextCalls rewrites the four legacy "use context" spellings into
-// the canonical `<Name>Context(...)` call using the Go AST. Returns the
+// astRewriteTopicCalls rewrites the four legacy "use topic" spellings into
+// the canonical `<Name>Topic(...)` call using the Go AST. Returns the
 // rewritten source plus nil on success; ("", error) when parsing fails.
-func astRewriteContextCalls(src string, structs []structInfo) (string, error) {
+func astRewriteTopicCalls(src string, structs []structInfo) (string, error) {
 	// Build a lookup of valid struct names → ctor name. Only structs with a
 	// non-empty KeyName participate.
 	ctorFor := make(map[string]string, len(structs))
@@ -220,7 +220,7 @@ func astRewriteContextCalls(src string, structs []structInfo) (string, error) {
 		if s.KeyName == "" {
 			continue
 		}
-		ctorFor[s.Name] = s.Name + "Context"
+		ctorFor[s.Name] = s.Name + "Topic"
 	}
 	if len(ctorFor) == 0 {
 		return src, nil
@@ -302,11 +302,11 @@ func astRewriteContextCalls(src string, structs []structInfo) (string, error) {
 		var newArgs []ast.Expr
 
 		switch {
-		case fnName == "UseContext":
+		case fnName == "UseTopic":
 			// Three flavors:
-			//  UseContext(NameKey, NameValue) — first arg is the Key ident
-			//  UseContext(Name,    NameValue) — first arg is the struct name ident
-			//  UseContext(NameValue)          — single struct-literal arg
+			//  UseTopic(NameKey, NameValue) — first arg is the Key ident
+			//  UseTopic(Name,    NameValue) — first arg is the struct name ident
+			//  UseTopic(NameValue)          — single struct-literal arg
 			if len(call.Args) >= 2 {
 				if id, ok := call.Args[0].(*ast.Ident); ok {
 					candidate := id.Name
@@ -328,9 +328,9 @@ func astRewriteContextCalls(src string, structs []structInfo) (string, error) {
 			}
 		case strings.HasPrefix(fnName, "Use"):
 			rest := strings.TrimPrefix(fnName, "Use")
-			// UseNameContext(NameValue)
-			if strings.HasSuffix(rest, "Context") {
-				name := strings.TrimSuffix(rest, "Context")
+			// UseNameTopic(NameValue)
+			if strings.HasSuffix(rest, "Topic") {
+				name := strings.TrimSuffix(rest, "Topic")
 				if c, ok := ctorFor[name]; ok {
 					ctor = c
 					newArgs = call.Args

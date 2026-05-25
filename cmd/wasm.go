@@ -87,6 +87,9 @@ type WasmBuildCommand struct {
 func newWasmBuildCommand(cli gothic_cli.GothicCli) RunEFunc {
 	return func(cmd *cobra.Command, args []string) error {
 		cli.GetConfig()
+		// Generate topic_gen.go BEFORE ScanPages so go/packages can type-check
+		// pages that reference the generated accessors (e.g. PageTopic()).
+		cli.Wasm.PregenerateTopicStubs()
 		pages, err := cli.Wasm.ScanPages("src/pages", "src/components")
 		if err != nil {
 			return fmt.Errorf("wasm: scan: %w", err)

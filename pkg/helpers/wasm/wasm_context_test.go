@@ -1,6 +1,9 @@
 package helpers
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 )
@@ -113,6 +116,78 @@ func TestBuildPerFieldCodecs_AllKindsCompile(t *testing.T) {
 		}
 	}
 	_ = item
+}
+
+func parseFile(src string) *ast.File {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", src, 0)
+	if err != nil {
+		panic(err)
+	}
+	return f
+}
+
+func TestCollectCreateTopicMetas_NamedVar(t *testing.T) {
+	src := `package p
+import "github.com/felipegenef/gothicframework/pkg/wasm"
+var PageTopic = wasm.CreateTopic(Page{}, wasm.TopicConfig{Name: "page", Compression: "BROTLI"})`
+	f := parseFile(src)
+	metas := collectCreateTopicMetas(f)
+	m, ok := metas["Page"]
+	if !ok {
+		t.Fatal("expected meta for Page")
+	}
+	if m.AccessorName != "PageTopic" {
+		t.Errorf("AccessorName: got %q, want %q", m.AccessorName, "PageTopic")
+	}
+	if m.KeyName != "page" {
+		t.Errorf("KeyName: got %q, want %q", m.KeyName, "page")
+	}
+}
+
+func TestCollectCreateTopicMetas_CustomName(t *testing.T) {
+	src := `package p
+var MyCustomName = CreateTopic(Page{}, TopicConfig{Name: "page"})`
+	f := parseFile(src)
+	metas := collectCreateTopicMetas(f)
+	m, ok := metas["Page"]
+	if !ok {
+		t.Fatal("expected meta for Page")
+	}
+	if m.AccessorName != "MyCustomName" {
+		t.Errorf("AccessorName: got %q, want %q", m.AccessorName, "MyCustomName")
+	}
+}
+
+func TestCollectCreateTopicMetas_BlankIdentifier(t *testing.T) {
+	src := `package p
+var _ = CreateTopic(Page{}, TopicConfig{Name: "page"})`
+	f := parseFile(src)
+	metas := collectCreateTopicMetas(f)
+	m, ok := metas["Page"]
+	if !ok {
+		t.Fatal("expected meta for Page")
+	}
+	// blank identifier → AccessorName should be empty, caller falls back to struct-derived name
+	if m.AccessorName != "" {
+		t.Errorf("AccessorName: got %q, want empty", m.AccessorName)
+	}
+}
+
+func TestTopicFuncNameFor_PrefersAccessorName(t *testing.T) {
+	h := DefaultWasmHelper()
+	si := structInfo{Name: "Page", AccessorName: "MyCustomTopic"}
+	if got := h.topicFuncNameFor(si); got != "MyCustomTopic" {
+		t.Errorf("got %q, want %q", got, "MyCustomTopic")
+	}
+}
+
+func TestTopicFuncNameFor_FallbackToStructName(t *testing.T) {
+	h := DefaultWasmHelper()
+	si := structInfo{Name: "Page"}
+	if got := h.topicFuncNameFor(si); got != "PageTopic" {
+		t.Errorf("got %q, want %q", got, "PageTopic")
+	}
 }
 
 func TestParseFieldTag(t *testing.T) {

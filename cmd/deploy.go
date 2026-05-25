@@ -95,6 +95,7 @@ func (command *DeployCommand) Deploy(stage string, action string) error {
 		return err
 	}
 
+	command.cli.Wasm.PregenerateTopicStubs()
 	wasmPages, err := command.cli.Wasm.ScanPages("src/pages", "src/components")
 	if err != nil {
 		return fmt.Errorf("wasm: scan pages: %w", err)

@@ -54,7 +54,7 @@ func injectGothicScope(html []byte, wasmName string) ([]byte, string) {
 // Math.random() so it remains uncorrelated across page lifecycles; the
 // instance id is only used to *find* the right wrapper, not to identify the
 // module on the global registry.
-func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMethod, inst string) []byte {
+func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMethod, compiler WasmCompiler, inst string) []byte {
 	isFullPage := bytes.Contains(html, []byte("</body>"))
 
 	// For full pages there is exactly one <body>, so no disambiguation is
@@ -136,15 +136,33 @@ func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMe
         };
     }
     (async function(){
-        if(typeof Go==='undefined'){
+        // Each compiler ships its own wasm_exec.js that defines globalThis.Go
+        // with an incompatible importObject shape (standard Go's Go has no
+        // wasi_snapshot_preview1; TinyGo's does). A page that mixes compilers
+        // (e.g. a TinyGo topic manager + a Golang page WASM) would otherwise
+        // race on the shared Go global and instantiate one binary against
+        // the wrong shim, producing
+        //   "Import #1 wasi_snapshot_preview1: module is not an object..."
+        // So we cache the Go class under a per-compiler slot and always
+        // construct from that slot rather than reading the live global.
+        var slot='%s';
+        if(!window.__gothicGoClasses)window.__gothicGoClasses={};
+        if(!window.__gothicGoClasses[slot]){
+            // Snapshot any pre-existing Go so we can restore it after loading
+            // this compiler's shim — otherwise siblings on the page would
+            // observe the wrong Go via the bare global.
+            var prevGo=(typeof Go!=='undefined')?Go:undefined;
             await new Promise(function(res,rej){
                 var s=document.createElement('script');
-                s.src='/public/wasm_exec.js';
+                s.src='/public/%s';
                 s.onload=res;s.onerror=rej;
                 document.head.appendChild(s);
             });
+            window.__gothicGoClasses[slot]=Go;
+            if(prevGo!==undefined){try{window.Go=prevGo;}catch(_){}}
         }
-        var go=new Go();
+        var GoCls=window.__gothicGoClasses[slot];
+        var go=new GoCls();
         window.__gothicGo=go;
         go.argv=['gothic','GOTHIC_SCOPE='+id];
         var r=await WebAssembly.instantiateStreaming(
@@ -156,7 +174,7 @@ func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMe
         go.run(r.instance);
     })();
 })();
-</script>`, wasmName, findEl, ext)
+</script>`, wasmName, findEl, wasmExecFile(compiler), wasmExecFile(compiler), ext)
 
 	if isFullPage {
 		return bytes.Replace(html, []byte("</body>"), []byte(script+"</body>"), 1)
@@ -164,11 +182,19 @@ func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMe
 	return append(html, []byte(script)...)
 }
 
+// wasmExecFile returns the correct wasm_exec.js filename for the given compiler.
+func wasmExecFile(compiler WasmCompiler) string {
+	if compiler == Golang {
+		return "wasm_exec_go.js"
+	}
+	return "wasm_exec.js"
+}
+
 // injectWasmEnvelope is a convenience helper that owns the instance id for one
 // render: it stamps the wrapper, then bakes the same id into the bootstrap.
 // Callers (wasmInjectedComponent.Render, ContextManagerComponent) should use
 // this so the two halves of the envelope cannot drift.
-func injectWasmEnvelope(html []byte, wasmName string, compression CompressionMethod) []byte {
+func injectWasmEnvelope(html []byte, wasmName string, compression CompressionMethod, compiler WasmCompiler) []byte {
 	scoped, inst := injectGothicScope(html, wasmName)
-	return injectWasmBootstrap(scoped, wasmName, compression, inst)
+	return injectWasmBootstrap(scoped, wasmName, compression, compiler, inst)
 }

@@ -1,9 +1,112 @@
 package gothicComponents
 
-// StatefulComponent renders an HTMX lazy-load wrapper around a component route.
-// Pass children to show a custom loading placeholder while the component loads.
-templ StatefulComponent(path string) {
-	<div hx-get={ path } hx-trigger="load" hx-swap="outerHTML">
-		{ children... }
-	</div>
+import "log"
+import "encoding/json"
+
+import routes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+
+type StatefulComponentData map[string]any
+
+// toStatefulComponentData marshals vals to a JSON string.
+// Returns ("", false) when vals is nil or empty — callers omit hx-vals entirely
+// in that case. Returns (json, true) otherwise.
+func toStatefulComponentData(v StatefulComponentData) (string, bool) {
+	if len(v) == 0 {
+		return "", false
+	}
+
+	b, err := json.Marshal(v)
+	if err != nil {
+		log.Printf("StatefulComponentData marshal error: %v", err)
+		return "", false
+	}
+
+	return string(b), true
 }
+
+func StatefulComponentOf[T any](
+	config *routes.RouteConfig[T],
+	vals ...StatefulComponentData,
+) templ.Component {
+
+	var v StatefulComponentData
+
+	if len(vals) > 0 && vals[0] != nil {
+		v = vals[0]
+	}
+
+	jsonVals, hasVals := toStatefulComponentData(v)
+	return StatefulComponent(
+		config.Path,
+		config.HttpMethod,
+		jsonVals,
+		hasVals,
+	)
+}
+
+templ StatefulComponent(path string, method routes.HttpMethod, vals string, hasVals bool) {
+	switch method {
+		case routes.GET:
+			if hasVals {
+				<div hx-get={ path } hx-trigger="load" hx-swap="outerHTML" hx-vals={ vals }>
+					{ children... }
+				</div>
+			} else {
+				<div hx-get={ path } hx-trigger="load" hx-swap="outerHTML">
+					{ children... }
+				</div>
+			}
+		case routes.POST:
+			if hasVals {
+				<div hx-post={ path } hx-trigger="load" hx-swap="outerHTML" hx-vals={ vals }>
+					{ children... }
+				</div>
+			} else {
+				<div hx-post={ path } hx-trigger="load" hx-swap="outerHTML">
+					{ children... }
+				</div>
+			}
+		case routes.PUT:
+			if hasVals {
+				<div hx-put={ path } hx-trigger="load" hx-swap="outerHTML" hx-vals={ vals }>
+					{ children... }
+				</div>
+			} else {
+				<div hx-put={ path } hx-trigger="load" hx-swap="outerHTML">
+					{ children... }
+				</div>
+			}
+		case routes.PATCH:
+			if hasVals {
+				<div hx-patch={ path } hx-trigger="load" hx-swap="outerHTML" hx-vals={ vals }>
+					{ children... }
+				</div>
+			} else {
+				<div hx-patch={ path } hx-trigger="load" hx-swap="outerHTML">
+					{ children... }
+				</div>
+			}
+		case routes.DELETE:
+			if hasVals {
+				<div hx-delete={ path } hx-trigger="load" hx-swap="outerHTML" hx-vals={ vals }>
+					{ children... }
+				</div>
+			} else {
+				<div hx-delete={ path } hx-trigger="load" hx-swap="outerHTML">
+					{ children... }
+				</div>
+			}
+		default:
+			if hasVals {
+				<div hx-get={ path } hx-trigger="load" hx-swap="outerHTML" hx-vals={ vals }>
+					{ children... }
+				</div>
+			} else {
+				<div hx-get={ path } hx-trigger="load" hx-swap="outerHTML">
+					{ children... }
+				</div>
+			}
+	}
+}
+
+

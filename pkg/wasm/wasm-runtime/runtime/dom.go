@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"syscall/js"
 )
@@ -142,7 +143,10 @@ func GetFileBytes(id string) []byte {
 
 	reader := js.Global().Get("FileReader").New()
 
-	onLoad := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	var onLoad, onError js.Func
+	onLoad = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		onLoad.Release()
+		onError.Release()
 		arrayBuffer := reader.Get("result")
 		uint8Array := js.Global().Get("Uint8Array").New(arrayBuffer)
 		data := make([]byte, uint8Array.Get("length").Int())
@@ -150,7 +154,9 @@ func GetFileBytes(id string) []byte {
 		ch <- result{data: data, ok: true}
 		return nil
 	})
-	onError := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	onError = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		onLoad.Release()
+		onError.Release()
 		ch <- result{ok: false}
 		return nil
 	})
@@ -264,20 +270,30 @@ func Fetch(url string, config ...FetchConfig) (string, error) {
 	}
 	ch := make(chan result, 1)
 
-	thenFn := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	var thenFn, catchFn js.Func
+	thenFn = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		thenFn.Release()
+		catchFn.Release()
 		resp := args[0]
-		textThen := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-			ch <- result{body: args[0].String()}
+		var textThen, textCatch js.Func
+		textThen = js.FuncOf(func(_ js.Value, a []js.Value) interface{} {
+			textThen.Release()
+			textCatch.Release()
+			ch <- result{body: a[0].String()}
 			return nil
 		})
-		textCatch := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-			ch <- result{err: errors.New(args[0].String())}
+		textCatch = js.FuncOf(func(_ js.Value, a []js.Value) interface{} {
+			textThen.Release()
+			textCatch.Release()
+			ch <- result{err: errors.New(a[0].String())}
 			return nil
 		})
 		resp.Call("text").Call("then", textThen).Call("catch", textCatch)
 		return nil
 	})
-	catchFn := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	catchFn = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		thenFn.Release()
+		catchFn.Release()
 		ch <- result{err: errors.New(args[0].String())}
 		return nil
 	})
@@ -336,24 +352,34 @@ func FetchBytes(url string, config ...FetchConfig) ([]byte, error) {
 	}
 	ch := make(chan result, 1)
 
-	thenFn := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	var thenFn, catchFn js.Func
+	thenFn = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		thenFn.Release()
+		catchFn.Release()
 		resp := args[0]
 		// Use arrayBuffer() instead of text() to avoid UTF-8 corruption
-		bufThen := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-			uint8Array := js.Global().Get("Uint8Array").New(args[0])
+		var bufThen, bufCatch js.Func
+		bufThen = js.FuncOf(func(_ js.Value, a []js.Value) interface{} {
+			bufThen.Release()
+			bufCatch.Release()
+			uint8Array := js.Global().Get("Uint8Array").New(a[0])
 			data := make([]byte, uint8Array.Get("length").Int())
 			js.CopyBytesToGo(data, uint8Array)
 			ch <- result{data: data}
 			return nil
 		})
-		bufCatch := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-			ch <- result{err: errors.New(args[0].String())}
+		bufCatch = js.FuncOf(func(_ js.Value, a []js.Value) interface{} {
+			bufThen.Release()
+			bufCatch.Release()
+			ch <- result{err: errors.New(a[0].String())}
 			return nil
 		})
 		resp.Call("arrayBuffer").Call("then", bufThen).Call("catch", bufCatch)
 		return nil
 	})
-	catchFn := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	catchFn = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		thenFn.Release()
+		catchFn.Release()
 		ch <- result{err: errors.New(args[0].String())}
 		return nil
 	})
@@ -362,4 +388,180 @@ func FetchBytes(url string, config ...FetchConfig) ([]byte, error) {
 
 	r := <-ch
 	return r.data, r.err
+}
+
+// JSValue wraps js.Value. Never create as a literal; use JS(), Document(), etc.
+type JSValue struct{ v js.Value }
+
+func JS() JSValue       { return JSValue{js.Global()} }
+func Window() JSValue   { return JS() }
+func Document() JSValue { return JSValue{js.Global().Get("document")} }
+
+func ConsoleLog(args ...any) { js.Global().Get("console").Call("log", toJSArgs(args)...) }
+
+func GetElementById(id string) JSValue    { return JSValue{js.Global().Get("document").Call("getElementById", id)} }
+func CreateElement(tag string) JSValue    { return JSValue{js.Global().Get("document").Call("createElement", tag)} }
+func QuerySelector(sel string) JSValue    { return JSValue{js.Global().Get("document").Call("querySelector", sel)} }
+func QuerySelectorAll(sel string) JSValue { return JSValue{js.Global().Get("document").Call("querySelectorAll", sel)} }
+
+func (v JSValue) Get(key string) JSValue                  { return JSValue{v.v.Get(key)} }
+func (v JSValue) Set(key string, val any)                 { v.v.Set(key, toJSVal(val)) }
+func (v JSValue) Call(method string, args ...any) JSValue { return JSValue{v.v.Call(method, toJSArgs(args)...)} }
+func (v JSValue) New(args ...any) JSValue                 { return JSValue{v.v.New(toJSArgs(args)...)} }
+func (v JSValue) String() string                          { return v.v.String() }
+func (v JSValue) Int() int                                { return v.v.Int() }
+func (v JSValue) Float() float64                          { return v.v.Float() }
+func (v JSValue) Bool() bool                              { return v.v.Bool() }
+func (v JSValue) IsNull() bool                            { return v.v.IsNull() }
+func (v JSValue) IsUndefined() bool                       { return v.v.IsUndefined() }
+func (v JSValue) Truthy() bool                            { return v.v.Truthy() }
+func (v JSValue) Index(i int) JSValue                     { return JSValue{v.v.Index(i)} }
+func (v JSValue) SetIndex(i int, val any)                 { v.v.SetIndex(i, toJSVal(val)) }
+func (v JSValue) Length() int                             { return v.v.Length() }
+
+func CopyBytesToJS(dst JSValue, src []byte) int { return js.CopyBytesToJS(dst.v, src) }
+func CopyBytesToGo(dst []byte, src JSValue) int { return js.CopyBytesToGo(dst, src.v) }
+
+func toJSVal(v any) any {
+	switch x := v.(type) {
+	case JSValue:
+		return x.v
+	default:
+		return js.ValueOf(x)
+	}
+}
+
+func toJSArgs(args []any) []any {
+	out := make([]any, len(args))
+	for i, a := range args {
+		out[i] = toJSVal(a)
+	}
+	return out
+}
+
+// TriggerDownload prompts the browser to download `data` as a file named `filename` with the given MIME type.
+func TriggerDownload(filename string, data []byte, mimeType string) {
+	uint8Array := js.Global().Get("Uint8Array").New(len(data))
+	js.CopyBytesToJS(uint8Array, data)
+	blobParts := js.Global().Get("Array").New(uint8Array)
+	opts := js.Global().Get("Object").New()
+	opts.Set("type", mimeType)
+	blob := js.Global().Get("Blob").New(blobParts, opts)
+	url := js.Global().Get("URL").Call("createObjectURL", blob)
+	a := js.Global().Get("document").Call("createElement", "a")
+	a.Set("href", url)
+	a.Set("download", filename)
+	js.Global().Get("document").Get("body").Call("appendChild", a)
+	a.Call("click")
+	js.Global().Get("document").Get("body").Call("removeChild", a)
+	js.Global().Get("URL").Call("revokeObjectURL", url)
+}
+
+// Element tree helpers.
+func AppendChild(parent, child JSValue) { parent.v.Call("appendChild", child.v) }
+func RemoveElement(el JSValue)          { el.v.Call("remove") }
+func ClickElement(el JSValue)           { el.v.Call("click") }
+
+// WriteClipboard writes the given text to the system clipboard via navigator.clipboard.writeText.
+func WriteClipboard(text string) {
+	js.Global().Get("navigator").Get("clipboard").Call("writeText", text)
+}
+
+// ExecJS executes the given script string in the global scope.
+func ExecJS(script string) {
+	js.Global().Call("eval", script)
+}
+
+// Navigation helpers.
+func Navigate(url string)         { js.Global().Get("location").Set("href", url) }
+func Reload()                     { js.Global().Get("location").Call("reload") }
+func PushState(url, title string) { js.Global().Get("history").Call("pushState", js.Null(), title, url) }
+func GoBack()                     { js.Global().Get("history").Call("back") }
+
+// LocalStorage helpers
+func LocalStorageSet(key, value string) {
+	js.Global().Get("localStorage").Call("setItem", key, value)
+}
+
+func LocalStorageGet(key string) string {
+	v := js.Global().Get("localStorage").Call("getItem", key)
+	if v.IsNull() || v.IsUndefined() {
+		return ""
+	}
+	return v.String()
+}
+
+func LocalStorageRemove(key string) {
+	js.Global().Get("localStorage").Call("removeItem", key)
+}
+
+// SessionStorage helpers
+func SessionStorageSet(key, value string) {
+	js.Global().Get("sessionStorage").Call("setItem", key, value)
+}
+
+func SessionStorageGet(key string) string {
+	v := js.Global().Get("sessionStorage").Call("getItem", key)
+	if v.IsNull() || v.IsUndefined() {
+		return ""
+	}
+	return v.String()
+}
+
+func SessionStorageRemove(key string) {
+	js.Global().Get("sessionStorage").Call("removeItem", key)
+}
+
+// CookieOptions configures CookieSet behaviour.
+type CookieOptions struct {
+	MaxAge   int    // seconds; 0 = session cookie
+	Path     string // defaults to "/"
+	SameSite string // "Strict", "Lax", or "None"
+	Secure   bool
+}
+
+// CookieSet writes a cookie to document.cookie.
+func CookieSet(key, value string, opts ...CookieOptions) {
+	path := "/"
+	maxAge := 0
+	sameSite := ""
+	secure := false
+	if len(opts) > 0 {
+		o := opts[0]
+		if o.Path != "" {
+			path = o.Path
+		}
+		maxAge = o.MaxAge
+		sameSite = o.SameSite
+		secure = o.Secure
+	}
+	cookie := key + "=" + value + "; Path=" + path
+	if maxAge != 0 {
+		cookie += "; Max-Age=" + strconv.Itoa(maxAge)
+	}
+	if sameSite != "" {
+		cookie += "; SameSite=" + sameSite
+	}
+	if secure {
+		cookie += "; Secure"
+	}
+	js.Global().Get("document").Set("cookie", cookie)
+}
+
+// CookieGet reads a cookie value from document.cookie.
+// Returns "" for missing or HttpOnly cookies.
+func CookieGet(key string) string {
+	raw := js.Global().Get("document").Get("cookie").String()
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, key+"=") {
+			return part[len(key)+1:]
+		}
+	}
+	return ""
+}
+
+// CookieDelete expires a cookie immediately.
+func CookieDelete(key string) {
+	CookieSet(key, "", CookieOptions{MaxAge: -1})
 }

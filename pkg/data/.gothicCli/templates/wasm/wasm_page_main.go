@@ -35,7 +35,7 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 {{range .KeyVars}}var {{.StructName}}Key = BinaryKey("{{.KeyName}}", _encode_{{.StructName}}, _decode_{{.StructName}})
 
 {{end}}
-{{range .CtxTypes}}type {{.TypeName}} struct {
+{{range .TopicTypes}}type {{.TypeName}} struct {
 {{range .Fields}}	{{.Name}} *ObservableField[{{.Type}}]
 {{end}}	_online  bool
 	_pending string
@@ -96,7 +96,7 @@ func (c *{{.TypeName}}) Set(v {{.StructName}}) {
 }
 
 {{end}}
-{{range .CtxSnippets}}
+{{range .TopicSnippets}}
 {{.}}
 
 {{end}}

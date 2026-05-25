@@ -21,7 +21,7 @@ import (
 
 const (
 	tmplWasmPageMain   = ".gothicCli/templates/wasm/wasm_page_main.go"
-	tmplCtxManagerMain = ".gothicCli/templates/wasm/wasm_ctx_manager_main.go"
+	tmplTopicManagerMain = ".gothicCli/templates/wasm/wasm_topic_manager_main.go"
 )
 
 func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
@@ -60,10 +60,10 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	}
 
 	mainPath := filepath.Join(genDir, "main.go")
-	ctxSnippets, ctxStructs, ctxAliases, ctxRefAliases := h.collectContextSnippets()
-	body, err := h.rewriteContextCalls(page.FuncBody, ctxStructs)
+	ctxSnippets, ctxStructs, ctxAliases, ctxRefAliases := h.collectTopicSnippets()
+	body, err := h.rewriteTopicCalls(page.FuncBody, ctxStructs)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wasm: rewrite context calls %s: %v\n", page.SourceFile, err)
+		fmt.Fprintf(os.Stderr, "wasm: rewrite topic calls %s: %v\n", page.SourceFile, err)
 		os.Exit(1)
 	}
 	if err := h.writeWasmMain(page.SourceFile, body, page.Imports, page.Helpers, ctxSnippets, ctxStructs, ctxAliases, ctxRefAliases, mainPath); err != nil {
@@ -79,26 +79,16 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 		return err
 	}
 
-	tinygo := h.TinyGoBinary()
-	if h.ConfigOverride != "" {
-		tinygo = h.ConfigOverride
-	}
-
 	pkg := "./" + filepath.Base(genDir) + "/"
-	cmd := exec.Command(tinygo,
-		"build", "-no-debug", "-opt=z",
-		"-o", absOutFile,
-		"-target", "wasm",
-		"-gc", "conservative",
-		pkg,
-	)
-	cmd.Dir = tempModDir
-	cmd.Env = append(os.Environ(), h.Environ()...)
+	cmd, err := h.buildCommandForCompiler(page.Compiler, pkg, absOutFile, tempModDir)
+	if err != nil {
+		return err
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("wasm: tinygo build %s: %w", page.OutputName, err)
+		return fmt.Errorf("wasm: build %s (%s): %w", page.OutputName, compilerLabel(page.Compiler), err)
 	}
 
 	wasmSize, _ := h.fileSize(absOutFile)
@@ -127,6 +117,85 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	return nil
 }
 
+// buildCommandForCompiler returns the exec.Cmd that compiles the WASM package
+// using the chosen compiler. tempModDir is the temp module root (contains
+// go.mod with module name "wasm-runtime") and pkg is the relative import path
+// ("./<genDir>/"). The runtime files use `//go:build js && wasm`, so both
+// TinyGo's -target=wasm and standard Go's GOOS=js GOARCH=wasm satisfy them.
+func (h *WasmHelper) buildCommandForCompiler(choice WasmCompilerChoice, pkg, absOutFile, tempModDir string) (*exec.Cmd, error) {
+	switch choice {
+	case WasmCompilerLocalTinyGo:
+		tinygo, err := exec.LookPath("tinygo")
+		if err != nil {
+			return nil, fmt.Errorf("wasm: WasmCompiler=LocalTinyGo but tinygo not found in PATH: %w", err)
+		}
+		cmd := exec.Command(tinygo,
+			"build", "-no-debug", "-opt=z",
+			"-o", absOutFile,
+			"-target", "wasm",
+			"-gc", "conservative",
+			pkg,
+		)
+		cmd.Dir = tempModDir
+		cmd.Env = os.Environ()
+		return cmd, nil
+
+	case WasmCompilerGolang:
+		goExe, err := exec.LookPath("go")
+		if err != nil {
+			return nil, fmt.Errorf("wasm: WasmCompiler=Golang but go not found in PATH: %w", err)
+		}
+		cmd := exec.Command(goExe,
+			"build",
+			"-ldflags=-s -w",
+			"-trimpath",
+			"-o", absOutFile,
+			pkg,
+		)
+		cmd.Dir = tempModDir
+		cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
+		return cmd, nil
+
+	default: // WasmCompilerGothicTinyGo
+		tinygo := h.TinyGoBinary()
+		if h.ConfigOverride != "" {
+			tinygo = h.ConfigOverride
+		}
+		cmd := exec.Command(tinygo,
+			"build", "-no-debug", "-opt=z",
+			"-o", absOutFile,
+			"-target", "wasm",
+			"-gc", "conservative",
+			pkg,
+		)
+		cmd.Dir = tempModDir
+		cmd.Env = append(os.Environ(), h.Environ()...)
+		return cmd, nil
+	}
+}
+
+func compilerLabel(c WasmCompilerChoice) string {
+	switch c {
+	case WasmCompilerLocalTinyGo:
+		return "local tinygo"
+	case WasmCompilerGolang:
+		return "go (js/wasm)"
+	default:
+		return "embedded tinygo"
+	}
+}
+
+// pagesUseStandardGo returns true if any page uses the standard Go compiler.
+// Such pages need the standard-Go wasm_exec.js, which is incompatible with TinyGo's.
+func pagesUseStandardGo(pages []WasmPage) bool {
+	for _, p := range pages {
+		if p.Compiler == WasmCompilerGolang {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 	if err := h.EnsureBinary(); err != nil {
 		return err
@@ -148,8 +217,8 @@ func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 
 	h.cache = loadWasmCache()
 
-	if err := h.GenerateContextManagers(outDir); err != nil {
-		wasmErrorf("context manager build failed: %v", err)
+	if err := h.GenerateTopicManagers(outDir); err != nil {
+		wasmErrorf("topic manager build failed: %v", err)
 	}
 
 	g, gctx := errgroup.WithContext(context.Background())
@@ -169,7 +238,52 @@ func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 	}
 
 	h.cache.save()
-	return h.CopyWasmExec("public")
+	if err := h.CopyWasmExec("public"); err != nil {
+		return err
+	}
+	// Pages built with the standard Go compiler need the matching wasm_exec.js
+	// from GOROOT (TinyGo's shim is ABI-incompatible). Emit it side-by-side as
+	// wasm_exec_go.js so the bootstrap layer can pick the right one.
+	if pagesUseStandardGo(pages) {
+		if err := h.CopyGoWasmExec("public"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CopyGoWasmExec copies the standard Go wasm_exec.js from GOROOT into destDir
+// as wasm_exec_go.js. Tries GOROOT/lib/wasm (Go 1.24+) then GOROOT/misc/wasm
+// (older versions).
+func (h *WasmHelper) CopyGoWasmExec(destDir string) error {
+	out, err := exec.Command("go", "env", "GOROOT").Output()
+	if err != nil {
+		return fmt.Errorf("wasm: go env GOROOT: %w", err)
+	}
+	goroot := strings.TrimSpace(string(out))
+	candidates := []string{
+		filepath.Join(goroot, "lib", "wasm", "wasm_exec.js"),
+		filepath.Join(goroot, "misc", "wasm", "wasm_exec.js"),
+	}
+	var srcPath string
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			srcPath = c
+			break
+		}
+	}
+	if srcPath == "" {
+		return fmt.Errorf("wasm: could not locate wasm_exec.js under %s (looked in lib/wasm and misc/wasm)", goroot)
+	}
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		return fmt.Errorf("wasm: read %s: %w", srcPath, err)
+	}
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("wasm: mkdir %s: %w", destDir, err)
+	}
+	dst := filepath.Join(destDir, "wasm_exec_go.js")
+	return os.WriteFile(dst, data, 0644)
 }
 
 func (h *WasmHelper) CopyWasmExec(destDir string) error {
@@ -180,8 +294,8 @@ func (h *WasmHelper) CopyWasmExec(destDir string) error {
 	return os.WriteFile(dst, wasmexec.Shim, 0644)
 }
 
-func (h *WasmHelper) GenerateContextManagers(outDir string) error {
-	snippets, structs, aliases, refAliases := h.collectContextSnippets()
+func (h *WasmHelper) GenerateTopicManagers(outDir string) error {
+	snippets, structs, aliases, refAliases := h.collectTopicSnippets()
 	if !h.hasCtxStructs(structs) {
 		return nil
 	}
@@ -193,15 +307,15 @@ func (h *WasmHelper) GenerateContextManagers(outDir string) error {
 		if s.KeyName == "" {
 			continue
 		}
-		if err := h.buildContextManager(s, snippets, structs, aliases, refAliases, outDir); err != nil {
+		if err := h.buildTopicManager(s, snippets, structs, aliases, refAliases, outDir); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStructs []structInfo, aliases map[string]string, refAliases map[string]typeRef, outDir string) error {
-	wasmName := "ctx-" + s.KeyName
+func (h *WasmHelper) buildTopicManager(s structInfo, snippets []string, allStructs []structInfo, aliases map[string]string, refAliases map[string]typeRef, outDir string) error {
+	wasmName := "topic-" + s.KeyName
 	compression := s.Compression
 	var hash string
 	if h.cache != nil {
@@ -221,7 +335,7 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 		}
 	}
 
-	tempModDir, err := os.MkdirTemp("", "tinygo-ctx-*")
+	tempModDir, err := os.MkdirTemp("", "tinygo-topic-*")
 	if err != nil {
 		return fmt.Errorf("wasm: mkdirtemp: %w", err)
 	}
@@ -239,7 +353,7 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 	mainPath := filepath.Join(genDir, "main.go")
 	codecs, err := h.buildCodecData(allStructs, aliases, refAliases)
 	if err != nil {
-		return fmt.Errorf("wasm: context codec: %w", err)
+		return fmt.Errorf("wasm: topic codec: %w", err)
 	}
 	structNames := make(map[string]bool, len(allStructs))
 	for _, st := range allStructs {
@@ -249,15 +363,15 @@ func (h *WasmHelper) buildContextManager(s structInfo, snippets []string, allStr
 	if err != nil {
 		return fmt.Errorf("wasm: manager fields: %w", err)
 	}
-	if err := h.Template.UpdateFromTemplate(tmplCtxManagerMain, mainPath, WasmCtxManagerMainData{
-		StructName:  s.Name,
-		KeyName:     s.KeyName,
-		HasTime:     h.hasTimeFields(allStructs),
-		Codecs:      codecs,
-		CtxSnippets: snippets,
-		Fields:      fields,
+	if err := h.Template.UpdateFromTemplate(tmplTopicManagerMain, mainPath, WasmTopicManagerMainData{
+		StructName:    s.Name,
+		KeyName:       s.KeyName,
+		HasTime:       h.hasTimeFields(allStructs),
+		Codecs:        codecs,
+		TopicSnippets: snippets,
+		Fields:        fields,
 	}); err != nil {
-		return fmt.Errorf("wasm: render context manager main.go: %w", err)
+		return fmt.Errorf("wasm: render topic manager main.go: %w", err)
 	}
 
 	absOutFile, err := filepath.Abs(filepath.Join(outDir, wasmName+".wasm"))
@@ -310,9 +424,9 @@ func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, helper
 	if err != nil {
 		return fmt.Errorf("wasm: codec: %w", err)
 	}
-	wasmFuncs, err := h.buildWasmCtxFuncData(ctxStructs, aliases, refAliases)
+	wasmFuncs, err := h.buildWasmTopicFuncData(ctxStructs, aliases, refAliases)
 	if err != nil {
-		return fmt.Errorf("wasm: ctx func data: %w", err)
+		return fmt.Errorf("wasm: topic func data: %w", err)
 	}
 	// Inject "time" import when any context struct uses time.Time and the page
 	// hasn't already imported it from its own source file.
@@ -353,9 +467,9 @@ func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, helper
 		StdImports:  stdImports,
 		Codecs:      codecs,
 		KeyVars:     h.buildKeyVarData(ctxStructs),
-		CtxTypes:    h.buildCtxTypeData(ctxStructs),
-		WasmFuncs:   wasmFuncs,
-		CtxSnippets: ctxSnippets,
+		TopicTypes:    h.buildTopicTypeData(ctxStructs),
+		WasmFuncs:     wasmFuncs,
+		TopicSnippets: ctxSnippets,
 		Body:        indented.String(),
 		Helpers:     helpers,
 	})

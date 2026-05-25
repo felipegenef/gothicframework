@@ -82,7 +82,7 @@ func TestInjectGothicScope_UniqueInstancePerCall(t *testing.T) {
 // the JS selector targets the body that carries the wasm attribute.
 func TestInjectWasmBootstrap_FullPage_Gzip(t *testing.T) {
 	in := []byte(`<html><body data-gothic-wasm="counter" data-gothic-inst="abc">x</body></html>`)
-	out := injectWasmBootstrap(in, "counter", GZIP, "abc")
+	out := injectWasmBootstrap(in, "counter", GZIP, GothicTinyGo, "abc")
 
 	if !bytes.Contains(out, []byte(`</body></html>`)) {
 		t.Errorf("expected the doc to keep its closing tags: %s", out)
@@ -103,7 +103,7 @@ func TestInjectWasmBootstrap_FullPage_Gzip(t *testing.T) {
 
 func TestInjectWasmBootstrap_FullPage_Brotli(t *testing.T) {
 	in := []byte(`<html><body>x</body></html>`)
-	out := injectWasmBootstrap(in, "counter", BROTLI, "abc")
+	out := injectWasmBootstrap(in, "counter", BROTLI, GothicTinyGo, "abc")
 	if !bytes.Contains(out, []byte(`'/public/wasm/'+wn+'.wasm.br'`)) {
 		t.Errorf("expected brotli extension in the WASM fetch URL: %s", out)
 	}
@@ -114,7 +114,7 @@ func TestInjectWasmBootstrap_FullPage_Brotli(t *testing.T) {
 // data-gothic-inst selector so duplicate-component pages resolve correctly.
 func TestInjectWasmBootstrap_Fragment(t *testing.T) {
 	in := []byte(`<div data-gothic-wasm="components-pingmirror" data-gothic-inst="deadbeef" style="display:contents">x</div>`)
-	out := injectWasmBootstrap(in, "components-pingmirror", GZIP, "deadbeef")
+	out := injectWasmBootstrap(in, "components-pingmirror", GZIP, GothicTinyGo, "deadbeef")
 
 	if !bytes.HasSuffix(out, []byte(`</script>`)) {
 		t.Errorf("expected fragment output to end with </script>, got: %s", out)
@@ -134,7 +134,7 @@ func TestInjectWasmBootstrap_Fragment(t *testing.T) {
 // the wrapper through to the JS selector.
 func TestInjectWasmEnvelope_EndToEnd_Fragment(t *testing.T) {
 	in := []byte(`<section>hi</section>`)
-	out := injectWasmEnvelope(in, "components-pingmirror", GZIP)
+	out := injectWasmEnvelope(in, "components-pingmirror", GZIP, GothicTinyGo)
 
 	// Extract the instance id from the wrapper and from the bootstrap script;
 	// they MUST be the same value, otherwise duplicate components on the same
@@ -160,7 +160,7 @@ func TestInjectWasmEnvelope_EndToEnd_Fragment(t *testing.T) {
 // persistent buffer means each key occupies exactly one slot for its lifetime.
 func TestInjectWasmBootstrap_CtxSetPersistentBuffer(t *testing.T) {
 	in := []byte(`<html><body>x</body></html>`)
-	out := injectWasmBootstrap(in, "counter", GZIP, "abc")
+	out := injectWasmBootstrap(in, "counter", GZIP, GothicTinyGo, "abc")
 
 	wants := [][]byte{
 		[]byte(`var _bufs={};`),
@@ -182,7 +182,7 @@ func TestInjectWasmBootstrap_CtxSetPersistentBuffer(t *testing.T) {
 // context update. If this substring ever reappears, the leak is back.
 func TestInjectWasmBootstrap_CtxSetNoSlice(t *testing.T) {
 	in := []byte(`<html><body>x</body></html>`)
-	out := injectWasmBootstrap(in, "counter", GZIP, "abc")
+	out := injectWasmBootstrap(in, "counter", GZIP, GothicTinyGo, "abc")
 
 	bad := []byte(`new Uint8Array(inst.exports.memory.buffer,offset,byteLen).slice()`)
 	if bytes.Contains(out, bad) {
@@ -198,7 +198,7 @@ func TestInjectWasmBootstrap_CtxSetNoSlice(t *testing.T) {
 // click because those refs are never released.
 func TestInjectWasmBootstrap_FindScopeHelperInjected(t *testing.T) {
 	in := []byte(`<html><body>x</body></html>`)
-	out := injectWasmBootstrap(in, "counter", GZIP, "abc")
+	out := injectWasmBootstrap(in, "counter", GZIP, GothicTinyGo, "abc")
 
 	wants := [][]byte{
 		[]byte(`window.__gothicFindScope=function()`),
@@ -218,7 +218,7 @@ func TestInjectWasmBootstrap_FindScopeHelperInjected(t *testing.T) {
 // WASM modules on the same page must not redeclare it.
 func TestInjectWasmBootstrap_FindScopeOnlyDeclaredOnce(t *testing.T) {
 	in := []byte(`<html><body>x</body></html>`)
-	out := injectWasmBootstrap(in, "counter", GZIP, "abc")
+	out := injectWasmBootstrap(in, "counter", GZIP, GothicTinyGo, "abc")
 
 	needle := []byte(`if(!window.__gothicFindScope)`)
 	if got := bytes.Count(out, needle); got != 1 {
@@ -232,8 +232,8 @@ func TestInjectWasmBootstrap_FindScopeOnlyDeclaredOnce(t *testing.T) {
 // selector.
 func TestInjectWasmEnvelope_UniqueAcrossCalls(t *testing.T) {
 	in := []byte(`<section>hi</section>`)
-	a := injectWasmEnvelope(in, "components-pingmirror", GZIP)
-	b := injectWasmEnvelope(in, "components-pingmirror", GZIP)
+	a := injectWasmEnvelope(in, "components-pingmirror", GZIP, GothicTinyGo)
+	b := injectWasmEnvelope(in, "components-pingmirror", GZIP, GothicTinyGo)
 
 	re := regexp.MustCompile(`data-gothic-inst="([0-9a-f]+)"`)
 	matchA := re.FindSubmatch(a)

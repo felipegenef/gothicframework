@@ -137,6 +137,14 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 		compression = WasmCompressionBrotli
 	}
 
+	compiler := WasmCompilerGothicTinyGo
+	switch res.Compiler {
+	case "LocalTinyGo":
+		compiler = WasmCompilerLocalTinyGo
+	case "Golang":
+		compiler = WasmCompilerGolang
+	}
+
 	return WasmPage{
 		SourceFile:  path,
 		FuncBody:    body,
@@ -145,6 +153,7 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 		HttpPath:    httpPath,
 		OutputName:  outputName,
 		Compression: compression,
+		Compiler:    compiler,
 	}, true, nil
 }
 

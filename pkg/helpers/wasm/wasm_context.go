@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/felipegenef/gothicframework/pkg/helpers/wasm/astx"
@@ -16,16 +17,35 @@ import (
 // Context scanning and parsing.
 //
 // Reads src/context/*.go, parses struct definitions and type aliases,
-// generates context_gen.go (server-side helpers), and produces inlinable
+// generates topic_gen.go (server-side helpers), and produces inlinable
 // user code snippets for the WASM build pipeline.
 
-const tmplContextGen = ".gothicCli/templates/wasm/context_gen.go"
+const tmplTopicGen = ".gothicCli/templates/wasm/topic_gen.go"
 
-// collectContextSnippets reads src/context/*.go, parses struct definitions,
-// generates context_gen.go (server side), and returns inlinable user code
-// snippets and the parsed structs for template rendering.
-func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []structInfo, aliases map[string]string, refAliases map[string]typeRef) {
-	entries, err := os.ReadDir("src/context")
+// resolveTopicSourceDir returns the directory to scan for topic/context definitions
+// and the corresponding generated-file name. Prefers src/topics/ (new pattern)
+// over src/context/ (legacy). Returns ("","", false) if neither exists.
+func resolveTopicSourceDir() (dir, genFile string, ok bool) {
+	if _, err := os.Stat("src/topics"); err == nil {
+		return "src/topics", "topic_gen.go", true
+	}
+	if _, err := os.Stat("src/context"); err == nil {
+		fmt.Fprintf(os.Stderr, "warning: src/context/ is deprecated; rename to src/topics/\n")
+		return "src/context", "context_gen.go", true
+	}
+	return "", "", false
+}
+
+// collectTopicSnippets reads src/topics/*.go (preferred) or src/context/*.go
+// (legacy), parses struct definitions, generates topic_gen.go / context_gen.go
+// (server side), and returns inlinable user code snippets and the parsed
+// structs for template rendering.
+func (h *WasmHelper) collectTopicSnippets() (snippets []string, structs []structInfo, aliases map[string]string, refAliases map[string]typeRef) {
+	sourceDir, genFile, ok := resolveTopicSourceDir()
+	if !ok {
+		return nil, nil, nil, nil
+	}
+	entries, err := os.ReadDir(sourceDir)
 	if err != nil {
 		return nil, nil, nil, nil
 	}
@@ -38,10 +58,10 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 	pkgName := "gothicwasm"
 
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == "context_gen.go" {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == genFile {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join("src/context", e.Name()))
+		data, err := os.ReadFile(filepath.Join(sourceDir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -69,20 +89,29 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 		}
 		if prev, exists := seenKeys[s.KeyName]; exists {
 			fmt.Fprintf(os.Stderr,
-				"error: duplicate context key name %q — used by both %s and %s in src/context/.\n"+
-					"  Each context struct must have a unique key name.\n",
-				s.KeyName, prev, s.Name)
+				"error: duplicate topic key name %q — used by both %s and %s in %s/.\n"+
+					"  Each topic struct must have a unique key name.\n",
+				s.KeyName, prev, s.Name, sourceDir)
 			os.Exit(1)
 		}
 		seenKeys[s.KeyName] = s.Name
 	}
 
-	h.writeContextKeyStubs(allStructs, allAliases, allRefAliases, pkgName)
+	h.writeTopicKeyStubs(allStructs, allAliases, allRefAliases, pkgName, sourceDir, genFile)
+
+	// Normalize user-authored `var X = CreateTopic(...)` declarations to
+	// `var _ = CreateTopic(...)` on disk, so the generated `func X()` in
+	// topic_gen.go does not collide with the original var. The CLI has already
+	// captured the accessor name into structInfo.AccessorName above.
+	if err := normalizeTopicDeclarations(sourceDir, allStructs); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm: normalize topic declarations: %v\n", err)
+		os.Exit(1)
+	}
 
 	for _, f := range files {
 		src, err := astx.StripPackageAndImports(f.src)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "context strip %s: %v\n", f.name, err)
+			fmt.Fprintf(os.Stderr, "topic strip %s: %v\n", f.name, err)
 			os.Exit(1)
 		}
 		src, err = h.rewriteAutoKeys(src)
@@ -92,36 +121,62 @@ func (h *WasmHelper) collectContextSnippets() (snippets []string, structs []stru
 		}
 		src = strings.TrimSpace(src)
 		if src != "" {
-			snippets = append(snippets, "// --- from src/context/"+f.name+" ---\n"+src)
+			snippets = append(snippets, "// --- from "+sourceDir+"/"+f.name+" ---\n"+src)
 		}
 	}
 	return snippets, allStructs, allAliases, allRefAliases
 }
 
-func (h *WasmHelper) writeContextKeyStubs(structs []structInfo, aliases map[string]string, refAliases map[string]typeRef, pkgName string) {
+// PregenerateTopicStubs runs the topic_gen.go generation pass without invoking
+// the WASM build. This is required before ScanPages so the `func PageTopic()`
+// (etc.) accessors exist as real symbols by the time go/packages loads the
+// project — otherwise pages that call `PageTopic()` fail to type-check.
+//
+// Safe to call repeatedly; a no-op when no src/topics or src/context dir exists.
+func (h *WasmHelper) PregenerateTopicStubs() {
+	// Ensure on-disk templates (including topic_gen.go.tmpl) match the CLI
+	// version. UpdateFromTemplate reads from disk, so the template must exist
+	// before collectTopicSnippets calls it.
+	if err := h.EnsureWasmTemplates(); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm: ensure templates: %v\n", err)
+		return
+	}
+	h.collectTopicSnippets()
+}
+
+func (h *WasmHelper) writeTopicKeyStubs(structs []structInfo, aliases map[string]string, refAliases map[string]typeRef, pkgName, sourceDir, genFile string) {
+	outPath := filepath.Join(sourceDir, genFile)
 	if len(structs) == 0 {
-		_ = os.Remove("src/context/context_gen.go")
+		_ = os.Remove(outPath)
 		return
 	}
 
 	codecs, err := h.buildCodecData(structs, aliases, refAliases)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: context codec: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: topic codec: %v\n", err)
 		os.Exit(1)
 	}
 
-	data := ContextGenData{
+	data := TopicGenData{
 		PkgName:     pkgName,
 		HasCtx:      h.hasCtxStructs(structs),
 		HasTime:     h.hasTimeFields(structs),
 		Codecs:      codecs,
 		KeyVars:     h.buildKeyVarData(structs),
-		CtxTypes:    h.buildCtxTypeData(structs),
-		ServerFuncs: h.buildServerCtxFuncData(structs),
+		TopicTypes:  h.buildTopicTypeData(structs),
+		ServerFuncs: h.buildServerTopicFuncData(structs),
 		MountFns:    h.buildMountFnData(structs),
 	}
 
-	_ = h.Template.UpdateFromTemplate(tmplContextGen, "src/context/context_gen.go", data)
+	_ = h.Template.UpdateFromTemplate(tmplTopicGen, outPath, data)
+}
+
+// topicMeta carries the (keyName, compression, accessorName) extracted from a CreateTopic
+// call, indexed by the topic's underlying struct name.
+type topicMeta struct {
+	KeyName      string
+	Compression  WasmCompression
+	AccessorName string // the variable name from "var X = CreateTopic(...)"
 }
 
 // parseStructsFromSource parses struct definitions and type aliases from a Go source string.
@@ -134,6 +189,11 @@ func (h *WasmHelper) parseStructsFromSource(src string) (structs []structInfo, t
 	if err != nil {
 		return nil, typeAliases, typeRefAliases
 	}
+
+	// First pass: scan for CreateTopic(T{}, TopicConfig{...}) calls so the
+	// metadata is available when struct definitions are processed below.
+	topicMetas := collectCreateTopicMetas(f)
+
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok {
@@ -170,14 +230,18 @@ func (h *WasmHelper) parseStructsFromSource(src string) (structs []structInfo, t
 					} else {
 						compression = WasmCompressionGzip
 					}
-					if len(field.Names) == 0 && typ == "GothicSharedContext" {
-						si.KeyName = nameTag
-						si.Compression = compression
-						continue
-					}
+					_ = nameTag
+					_ = compression
 					for _, name := range field.Names {
 						si.Fields = append(si.Fields, fieldInfo{Name: name.Name, Type: typ, TypeRef: tref, GothicTag: tag})
 					}
+				}
+				// New: CreateTopic(T{}, TopicConfig{...}) — apply metadata if
+				// any call references this struct type.
+				if meta, ok := topicMetas[si.Name]; ok {
+					si.KeyName = meta.KeyName
+					si.Compression = meta.Compression
+					si.AccessorName = meta.AccessorName
 				}
 				structs = append(structs, si)
 			}
@@ -241,8 +305,203 @@ func (h *WasmHelper) hasTimeFields(structs []structInfo) bool {
 	return false
 }
 
-func (h *WasmHelper) ctxTypeName(structName string) string {
-	return strings.ToLower(structName[:1]) + structName[1:] + "Context"
+func (h *WasmHelper) topicTypeName(structName string) string {
+	return strings.ToLower(structName[:1]) + structName[1:] + "Topic"
 }
 
-func (h *WasmHelper) ctxFuncName(structName string) string { return structName + "Context" }
+func (h *WasmHelper) topicFuncName(structName string) string { return structName + "Topic" }
+
+// topicFuncNameFor returns the accessor function name for a topic struct.
+// It prefers the captured variable name (e.g. "PageTopic" from "var PageTopic = CreateTopic(...)"),
+// falling back to the struct-derived name when the var is blank or missing.
+func (h *WasmHelper) topicFuncNameFor(s structInfo) string {
+	if s.AccessorName != "" {
+		return s.AccessorName
+	}
+	return h.topicFuncName(s.Name)
+}
+
+// collectCreateTopicMetas walks the AST for `var _ = CreateTopic(T{},
+// TopicConfig{Name: "...", Compression: "..."})` (or any assignment whose RHS
+// is such a call) and returns a map from the underlying struct type name T to
+// the extracted metadata.
+//
+// The first call argument must be a composite literal whose Type is an
+// identifier — e.g. `MyStruct{}`. The second argument must be a TopicConfig
+// composite literal; its Name/Compression fields are read by key.
+func collectCreateTopicMetas(f *ast.File) map[string]topicMeta {
+	metas := make(map[string]topicMeta)
+	ast.Inspect(f, func(n ast.Node) bool {
+		gd, ok := n.(*ast.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			return true
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, val := range vs.Values {
+				call, ok := val.(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				// Match CreateTopic identifier; accept selector form too
+				// (e.g. wasm.CreateTopic) in case of qualified imports.
+				if !isCreateTopicCall(call.Fun) {
+					continue
+				}
+				if len(call.Args) < 2 {
+					continue
+				}
+				structName := topicStructNameFromArg(call.Args[0])
+				if structName == "" {
+					continue
+				}
+				name, compression := parseTopicConfigArg(call.Args[1])
+				// Capture the var name (e.g. "PageTopic" from "var PageTopic = CreateTopic(...)").
+				// If the var is blank ("_") or missing, fall back to struct-derived name.
+				// No warning — blank identifier on disk is the CLI's own normalized form
+				// after rewriting "var PageTopic = CreateTopic(...)" → "var _ = CreateTopic(...)".
+				var accessorName string
+				if i < len(vs.Names) {
+					if n := vs.Names[i].Name; n != "_" {
+						accessorName = n
+					}
+				}
+				metas[structName] = topicMeta{KeyName: name, Compression: compression, AccessorName: accessorName}
+			}
+		}
+		return true
+	})
+	return metas
+}
+
+func isCreateTopicCall(fun ast.Expr) bool {
+	switch f := fun.(type) {
+	case *ast.Ident:
+		return f.Name == "CreateTopic"
+	case *ast.SelectorExpr:
+		return f.Sel != nil && f.Sel.Name == "CreateTopic"
+	case *ast.IndexExpr:
+		// CreateTopic[T] — generic instantiation form
+		return isCreateTopicCall(f.X)
+	case *ast.IndexListExpr:
+		return isCreateTopicCall(f.X)
+	}
+	return false
+}
+
+// topicStructNameFromArg extracts the struct type name from the first
+// argument to CreateTopic. Accepts a composite literal (T{}) or a bare type
+// identifier (T) — the latter is unusual but defensive.
+func topicStructNameFromArg(arg ast.Expr) string {
+	switch a := arg.(type) {
+	case *ast.CompositeLit:
+		if a.Type == nil {
+			return ""
+		}
+		switch t := a.Type.(type) {
+		case *ast.Ident:
+			return t.Name
+		case *ast.SelectorExpr:
+			if t.Sel != nil {
+				return t.Sel.Name
+			}
+		}
+	case *ast.Ident:
+		return a.Name
+	}
+	return ""
+}
+
+// parseTopicConfigArg pulls Name and Compression from a TopicConfig composite
+// literal. Compression defaults to GZIP; "BROTLI" (case-insensitive) → brotli.
+func parseTopicConfigArg(arg ast.Expr) (name string, compression WasmCompression) {
+	compression = WasmCompressionGzip
+	cl, ok := arg.(*ast.CompositeLit)
+	if !ok {
+		return
+	}
+	for _, elt := range cl.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		keyIdent, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch keyIdent.Name {
+		case "Name":
+			if bl, ok := kv.Value.(*ast.BasicLit); ok && bl.Kind == token.STRING {
+				if unq, err := strconv.Unquote(bl.Value); err == nil {
+					name = unq
+				}
+			}
+		case "Compression":
+			if bl, ok := kv.Value.(*ast.BasicLit); ok && bl.Kind == token.STRING {
+				if unq, err := strconv.Unquote(bl.Value); err == nil {
+					if strings.EqualFold(unq, "BROTLI") {
+						compression = WasmCompressionBrotli
+					}
+				}
+			}
+		}
+	}
+	return
+}
+
+// normalizeTopicDeclarations rewrites every `var <AccessorName> = CreateTopic(`
+// line in the topic source files to `var _ = CreateTopic(`. This is done on
+// disk AFTER the CLI has captured AccessorName into structInfo, so the
+// generated `func <AccessorName>() *...Topic` in topic_gen.go no longer
+// collides with the user's original var declaration.
+//
+// It is intentionally line-based (not AST-rewrite) to preserve formatting and
+// comments exactly as the user authored them — only the leading "var Name ="
+// fragment changes.
+func normalizeTopicDeclarations(sourceDir string, structs []structInfo) error {
+	// Build set of accessor names per file. We don't know which file each
+	// accessor lives in without re-parsing, so we just attempt the rewrite on
+	// every .go file in the directory (cheap, idempotent).
+	accessors := make(map[string]struct{}, len(structs))
+	for _, s := range structs {
+		if s.AccessorName != "" {
+			accessors[s.AccessorName] = struct{}{}
+		}
+	}
+	if len(accessors) == 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		path := filepath.Join(sourceDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		orig := string(data)
+		out := orig
+		for name := range accessors {
+			// Replace "var <name> = CreateTopic(" → "var _ = CreateTopic("
+			needle := "var " + name + " = CreateTopic("
+			if strings.Contains(out, needle) {
+				out = strings.ReplaceAll(out, needle, "var _ = CreateTopic(")
+			}
+		}
+		if out != orig {
+			if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", path, err)
+			}
+		}
+	}
+	return nil
+}
+

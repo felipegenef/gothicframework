@@ -9,16 +9,6 @@ import (
 	"unsafe"
 )
 
-// GothicSharedContext is a zero-size marker type embedded in context structs.
-// The CLI reads the name tag on this field to derive the context key name.
-// Embedding it also satisfies the SharedContext constraint.
-type GothicSharedContext struct{}
-
-func (GothicSharedContext) isGothicSharedContext() {}
-
-// SharedContext is the compile-time constraint for context types.
-type SharedContext interface{ isGothicSharedContext() }
-
 // _gothicKeyRegistry maps context key names to their ContextKey (stored as any).
 // Populated by generated init() calls in the compiled WASM main.
 
@@ -494,4 +484,16 @@ func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decode
 			return decode(d)
 		},
 	}
+}
+
+// TopicConfig holds per-topic configuration.
+type TopicConfig struct {
+	Name        string
+	Compression string // "GZIP" or "BROTLI"; defaults to "GZIP"
+}
+
+// CreateTopic declares a topic. The CLI AST scanner detects this call and
+// generates the concrete typed accessor. At runtime this returns a no-op.
+func CreateTopic[T any](zero T, cfg TopicConfig) func() interface{} {
+	return func() interface{} { return nil }
 }

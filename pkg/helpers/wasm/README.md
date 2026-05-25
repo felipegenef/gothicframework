@@ -470,28 +470,29 @@ CreateWasmFunc("uploadChunked", func() {
 
 ---
 
-## Context
+## Topics
 
-Context lets multiple WASM components share reactive state without prop drilling. Because each component is a separate WASM module with its own Go heap, values are serialized through a JavaScript store (`window.__gothic_context`) and broadcast via `CustomEvent`. The current API uses a generated context constructor per shared struct — define the struct once in `src/context/` and the CLI generates a `<Struct>Context()` factory that handles encoding, decoding, broadcast, and subscription.
+Topics let multiple WASM components share reactive state without prop drilling. Because each component is a separate WASM module with its own Go heap, values are serialized through a JavaScript store (`window.__gothic_context`) and broadcast via `CustomEvent`. Define a struct once in `src/topics/` and the CLI generates a `<Struct>Topic()` factory that handles encoding, decoding, broadcast, and subscription.
 
-### Defining a shared context
+### Defining a topic
 
-1. Create `src/context/page_context.go` (or any name) with a struct embedding `GothicSharedContext`:
+1. Create `src/topics/page_topic.go` (or any name) with a `CreateTopic` call:
 
    ```go
-   package gothicwasm // any package name works — match what's in your src/context/ files
+   package gothicwasm // any package name works — match what's in your src/topics/ files
 
    import . "github.com/felipegenef/gothicframework/pkg/wasm"
 
    type Page struct {
-       GothicSharedContext `name:"page" compression:"brotli"`
        Pings int
        Label string
        Theme string
    }
+
+   var _ = CreateTopic(Page{}, TopicConfig{Name: "page", Compression: "BROTLI"})
    ```
 
-   The `name:` tag on `GothicSharedContext` sets the context key used in JS events (e.g. `gothic:context:page:Theme`). The optional `compression:` tag selects `brotli` or `gzip` for the manager WASM binary (default: `gzip`).
+   `TopicConfig.Name` sets the topic key used in JS events (e.g. `gothic:context:page:Theme`). `Compression` selects `"BROTLI"` or `"GZIP"` for the manager WASM binary (default: `"GZIP"`).
 
    **Supported field types:**
 
@@ -519,18 +520,18 @@ Context lets multiple WASM components share reactive state without prop drilling
 
    Without a `gothic:` tag the CLI infers the codec from the field's Go type.
 
-2. In any `ClientSideState`, call the auto-generated `PageContext()` constructor (the name is `<StructName>Context`):
+2. In any `ClientSideState`, call the auto-generated `PageTopic()` constructor (the name is `<StructName>Topic`):
 
    ```go
    ClientSideState: func() {
-       ctx := PageContext()         // *PageContext
+       ctx := PageTopic()         // *pageTopic
        Observe(func() {
            ctx.Set(Page{Pings: pings.Get(), Label: "...", Theme: theme.Get()})
        }, pings, theme)
    }
    ```
 
-3. Any other module on the page that also calls `PageContext()` receives the same updates. Each field on the returned struct is an `*ObservableField[T]` that participates in `Observe` like a regular observable.
+3. Any other module on the page that also calls `PageTopic()` receives the same updates. Each field on the returned struct is an `*ObservableField[T]` that participates in `Observe` like a regular observable.
 
 **`*ObservableField[T]` methods:**
 
@@ -541,16 +542,16 @@ Context lets multiple WASM components share reactive state without prop drilling
 | `Set(v T)` | Updates the local value and broadcasts to all other modules on the page. |
 
 
-### Complete context usage example
+### Complete topic usage example
 
 ```
-src/context/app_context.go       ← 1. define the struct
+src/topics/app_topic.go          ← 1. define the struct + CreateTopic
 src/components/counter/          ← 2. writer component
 src/components/sidebar/          ← 3. reader component
 src/pages/home/home.go           ← 4. mount the manager
 ```
 
-**Step 1 — define the shared struct** in `src/context/`:
+**Step 1 — define the shared struct** in `src/topics/`:
 
 ```go
 package gothicwasm // any package name works
@@ -558,20 +559,21 @@ package gothicwasm // any package name works
 import . "github.com/felipegenef/gothicframework/pkg/wasm"
 
 type App struct {
-    GothicSharedContext `name:"app"`
     Count int
     Theme string
     Label string
 }
+
+var _ = CreateTopic(App{}, TopicConfig{Name: "app"})
 ```
 
-Run `gothicframework wasm` — the CLI generates `AppContext()` and a manager WASM binary.
+Run `gothicframework wasm` — the CLI generates `AppTopic()` and a manager WASM binary.
 
 **Step 2 — writer component** (sets state):
 
 ```go
 ClientSideState: func() {
-    ctx := AppContext()   // *AppContext
+    ctx := AppTopic()   // *appTopic
 
     CreateWasmFunc("increment", func() {
         // ctx.Set fans out to per-field set-requests via the manager
@@ -597,7 +599,7 @@ ClientSideState: func() {
 
 ```go
 ClientSideState: func() {
-    ctx := AppContext()   // same key → same manager → same state
+    ctx := AppTopic()   // same key → same manager → same state
 
     Observe(func() {
         SetText("count-display", strconv.Itoa(ctx.Count.Get()))
@@ -618,17 +620,25 @@ ClientSideState: func() {
 ```go
 // home.go
 templ Home() {
-    @ContextManagerComponent(App{})   // boots the manager WASM
+    @routes.TopicManagerComponent("app", routes.GZIP)   // boots the manager WASM
     @CounterComponent()
     @SidebarComponent()
 }
 ```
 
-The manager WASM must be on the page before any consumer calls `AppContext()`. `ContextManagerComponent` handles this automatically.
+The manager WASM must be on the page before any consumer calls `AppTopic()`. `TopicManagerComponent` handles this automatically. The generated `AddAppTopic()` helper function (from `src/topics/topic_gen.go`) is the recommended type-safe way:
+
+```go
+templ Home() {
+    @AddAppTopic()    // generated — sets correct name + compression automatically
+    @CounterComponent()
+    @SidebarComponent()
+}
+```
 
 ### Lower-level key factories (advanced)
 
-For one-off primitive shares without defining a struct, the runtime exposes typed key factories. These are what the generated context code uses under the hood.
+For one-off primitive shares without defining a struct, the runtime exposes typed key factories. These are what the generated topic code uses under the hood.
 
 **Primitives** — lightweight, no extra binary cost:
 
@@ -1098,16 +1108,16 @@ The `unreachable` trap is the dramatic end-state; the subtler version — Chrome
 
 ---
 
-## Per-field context architecture
+## Per-field topic architecture
 
 Gothic uses per-field subscriptions combined with two further refinements that
 are load-bearing for stress workloads. This section documents the shipped behaviour.
 
-### The context manager WASM is the sole writer
+### The topic manager WASM is the sole writer
 
-Each `ContextKey` in `src/context/` produces a dedicated **manager WASM** built
-from `wasm_ctx_manager_main.go.tmpl`. It is mounted once per page via
-`ContextManagerComponent(...)`. The manager:
+Each topic declared in `src/topics/` produces a dedicated **manager WASM** built
+from `wasm_topic_manager_main.go.tmpl`. It is mounted once per page via
+`TopicManagerComponent(...)` (or the generated `Add<Struct>Topic()` helper). The manager:
 
 - Owns the canonical encoded state for that key as `_lastWholeEncoded` plus a
   `map[string][]byte` of per-field byte slices (`_fields`).
@@ -1125,11 +1135,13 @@ Consumer pages never write canonical state directly — they always dispatch a
 `RequestCtxSetField` (or the whole-struct fan-out from `ctx.Set`) and wait for
 the manager's broadcast to come back through `ApplyExternal`.
 
+> **Note:** The JS wire event names (`gothic:context:`, `gothic:ctx-req:`, `gothic:ctx-online:`, `gothic:ctx-ping:`) are stable wire-protocol identifiers and are intentionally kept as-is.
+
 ### `ListenCtxSetReq` diff loop — zero-allocation field comparison
 
 When `ctx.Set(struct)` is called by a consumer, it encodes the whole struct and
-sends it as `gothic:ctx-req:<key>`. The manager's handler must decide which
-fields actually changed and broadcast only those. The naive approach — decode
+sends it as `gothic:ctx-req:<key>`. The manager's handler decides which fields
+actually changed and broadcasts only those. The naive approach — decode
 the full struct then re-encode each field — allocates O(N) objects for every
 large slice field on every click and causes WASM heap exhaustion under stress.
 

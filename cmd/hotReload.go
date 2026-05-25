@@ -291,6 +291,7 @@ func (command *HotReloadCommand) rebuild() {
 }
 
 func (command *HotReloadCommand) buildWasmAll() {
+	command.cli.Wasm.PregenerateTopicStubs()
 	pages, err := command.cli.Wasm.ScanPages("src/pages", "src/components")
 	if err != nil {
 		wasmErrorf("scan failed: %v", err)

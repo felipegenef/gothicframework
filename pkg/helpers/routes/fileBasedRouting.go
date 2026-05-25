@@ -38,6 +38,15 @@ const (
 	DELETE
 )
 
+// WasmCompiler selects the WASM build toolchain for a route.
+type WasmCompiler int
+
+const (
+	GothicTinyGo WasmCompiler = iota // default: embedded TinyGo binary
+	LocalTinyGo                      // system tinygo binary in PATH
+	Golang                           // GOOS=js GOARCH=wasm standard Go compiler
+)
+
 type RouteConfig[T any] struct {
 	Type            ConfigType
 	HttpMethod      HttpMethod
@@ -50,6 +59,8 @@ type RouteConfig[T any] struct {
 	// WasmCompression sets the compression algorithm for the compiled WASM output.
 	// Defaults to GZIP (zero value). Options: GZIP, BROTLI.
 	WasmCompression CompressionMethod
+	// WasmCompiler selects the WASM build toolchain. Defaults to GothicTinyGo.
+	WasmCompiler WasmCompiler
 	// Path is the HTTP route path, set automatically by RegisterRoute.
 	// Use it with StatefulComponentOf to avoid hardcoding path strings.
 	Path string
@@ -74,8 +85,9 @@ func (config *RouteConfig[T]) RegisterRoute(r chi.Router, httpPath string, compo
 	if config.ClientSideState != nil {
 		wasmName := WasmOutputName(httpPath)
 		compression := config.WasmCompression
+		compiler := config.WasmCompiler
 		wrapped = func(props T) templ.Component {
-			return &wasmInjectedComponent{inner: component(props), wasmName: wasmName, compression: compression}
+			return &wasmInjectedComponent{inner: component(props), wasmName: wasmName, compression: compression, compiler: compiler}
 		}
 	}
 	handler := config.resolveHandler(wrapped)
@@ -100,6 +112,7 @@ type wasmInjectedComponent struct {
 	inner       templ.Component
 	wasmName    string
 	compression CompressionMethod
+	compiler    WasmCompiler
 }
 
 func (c *wasmInjectedComponent) Render(ctx context.Context, w io.Writer) error {
@@ -107,7 +120,7 @@ func (c *wasmInjectedComponent) Render(ctx context.Context, w io.Writer) error {
 	if err := c.inner.Render(ctx, &buf); err != nil {
 		return err
 	}
-	_, err := w.Write(injectWasmEnvelope(buf.Bytes(), c.wasmName, c.compression))
+	_, err := w.Write(injectWasmEnvelope(buf.Bytes(), c.wasmName, c.compression, c.compiler))
 	return err
 }
 
@@ -116,10 +129,15 @@ type emptyComponent struct{}
 
 func (emptyComponent) Render(_ context.Context, _ io.Writer) error { return nil }
 
-// ContextManagerComponent returns a templ.Component that loads the named context-manager
-// WASM inline (no HTMX round-trip). Drop it in any layout or page with @wasm.AddPageContext().
+// TopicManagerComponent returns a templ.Component that loads the named topic-manager
+// WASM inline (no HTMX round-trip). Drop it in any layout or page with @wasm.AddPageTopic().
+func TopicManagerComponent(wasmName string, compression CompressionMethod) templ.Component {
+	return &wasmInjectedComponent{inner: emptyComponent{}, wasmName: wasmName, compression: compression, compiler: GothicTinyGo}
+}
+
+// Deprecated: use TopicManagerComponent. Will be removed after TestGothic conversion.
 func ContextManagerComponent(wasmName string, compression CompressionMethod) templ.Component {
-	return &wasmInjectedComponent{inner: emptyComponent{}, wasmName: wasmName, compression: compression}
+	return TopicManagerComponent(wasmName, compression)
 }
 
 func (config *RouteConfig[T]) resolveHandler(component func(T) templ.Component) http.HandlerFunc {

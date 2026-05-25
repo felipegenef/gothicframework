@@ -30,6 +30,15 @@ const (
 	WasmCompressionBrotli WasmCompression = iota // routes.BROTLI == 1
 )
 
+// WasmCompilerChoice mirrors routes.WasmCompiler to avoid circular imports.
+type WasmCompilerChoice int
+
+const (
+	WasmCompilerGothicTinyGo WasmCompilerChoice = iota // default
+	WasmCompilerLocalTinyGo
+	WasmCompilerGolang
+)
+
 // WasmPage describes a single page that has a WASM state function.
 type WasmPage struct {
 	SourceFile  string
@@ -40,6 +49,7 @@ type WasmPage struct {
 	HttpPath    string
 	OutputName  string
 	Compression WasmCompression
+	Compiler    WasmCompilerChoice
 }
 
 func NewWasmHelper(goos, goarch string) WasmHelper {

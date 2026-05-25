@@ -23,16 +23,16 @@ type KeyVarData struct {
 	KeyName    string
 }
 
-// CtxFieldData holds data for one field in a context struct.
-type CtxFieldData struct {
+// TopicFieldData holds data for one field in a topic struct.
+type TopicFieldData struct {
 	Name string
 	Type string
 }
 
-// CtxTypeData holds data for a context type struct declaration.
-type CtxTypeData struct {
+// TopicTypeData holds data for a topic type struct declaration.
+type TopicTypeData struct {
 	TypeName string
-	Fields   []CtxFieldData
+	Fields   []TopicFieldData
 }
 
 // PerFieldCodec carries per-field codec lines for the consumer (page) template.
@@ -44,22 +44,22 @@ type PerFieldCodec struct {
 	DecLines  string // decoder lines (references v.<FieldName>)
 }
 
-// WasmCtxFuncData holds data for one WASM-side context constructor + Set method.
-type WasmCtxFuncData struct {
+// WasmTopicFuncData holds data for one WASM-side topic constructor + Set method.
+type WasmTopicFuncData struct {
 	CtorName    string
 	TypeName    string
 	StructName  string
 	KeyName     string
-	Fields      []CtxFieldData
+	Fields      []TopicFieldData
 	FieldCodecs []PerFieldCodec // one entry per source struct field, in declaration order
 }
 
-// ServerCtxFuncData holds data for one server-side context stub.
-type ServerCtxFuncData struct {
+// ServerTopicFuncData holds data for one server-side topic stub.
+type ServerTopicFuncData struct {
 	CtorName   string
 	TypeName   string
 	StructName string
-	Fields     []CtxFieldData
+	Fields     []TopicFieldData
 }
 
 // MountFnData holds data for an AddXxxContext() mount function.
@@ -70,29 +70,29 @@ type MountFnData struct {
 	CompressionConst string // "routes.GZIP" or "routes.BROTLI" — used in generated Go code
 }
 
-// ContextGenData drives context_gen.go.tmpl.
-type ContextGenData struct {
+// TopicGenData drives topic_gen.go.tmpl.
+type TopicGenData struct {
 	PkgName     string
 	HasCtx      bool
 	HasTime     bool // true when any struct field has type time.Time
 	Codecs      []StructCodecData
 	KeyVars     []KeyVarData
-	CtxTypes    []CtxTypeData
-	ServerFuncs []ServerCtxFuncData
+	TopicTypes  []TopicTypeData
+	ServerFuncs []ServerTopicFuncData
 	MountFns    []MountFnData
 }
 
 // WasmPageMainData drives wasm_page_main.go.tmpl.
 type WasmPageMainData struct {
-	SourceFile  string
-	StdImports  []string
-	Codecs      []StructCodecData
-	KeyVars     []KeyVarData
-	CtxTypes    []CtxTypeData
-	WasmFuncs   []WasmCtxFuncData
-	CtxSnippets []string
-	Body        string
-	Helpers     []string
+	SourceFile     string
+	StdImports     []string
+	Codecs         []StructCodecData
+	KeyVars        []KeyVarData
+	TopicTypes     []TopicTypeData
+	WasmFuncs      []WasmTopicFuncData
+	TopicSnippets  []string
+	Body           string
+	Helpers        []string
 }
 
 // ManagerFieldData carries per-field information for the manager template.
@@ -104,23 +104,24 @@ type ManagerFieldData struct {
 	CaptureBody string // body of _capture<FieldName>(d *Decoder) []byte (from Phase 1)
 }
 
-// WasmCtxManagerMainData drives wasm_ctx_manager_main.go.tmpl.
-type WasmCtxManagerMainData struct {
-	StructName  string
-	KeyName     string
-	HasTime     bool // true when any struct field has type time.Time
-	Codecs      []StructCodecData
-	CtxSnippets []string
-	Fields      []ManagerFieldData // one entry per source struct field, in declaration order
+// WasmTopicManagerMainData drives wasm_topic_manager_main.go.tmpl.
+type WasmTopicManagerMainData struct {
+	StructName     string
+	KeyName        string
+	HasTime        bool // true when any struct field has type time.Time
+	Codecs         []StructCodecData
+	TopicSnippets  []string
+	Fields         []ManagerFieldData // one entry per source struct field, in declaration order
 }
 
-// structInfo / fieldInfo are the parsed representation of src/context/*.go.
+// structInfo / fieldInfo are the parsed representation of src/topics/*.go.
 
 type structInfo struct {
-	Name        string
-	KeyName     string
-	Compression WasmCompression
-	Fields      []fieldInfo
+	Name         string
+	KeyName      string
+	Compression  WasmCompression
+	Fields       []fieldInfo
+	AccessorName string // var name from "var X = CreateTopic(...)", falls back to struct-derived name
 }
 
 type fieldInfo struct {

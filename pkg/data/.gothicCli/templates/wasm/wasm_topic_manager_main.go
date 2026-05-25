@@ -34,7 +34,7 @@ func _decode_slice{{.Name}}(d *Decoder) []{{.Name}} {
 	return v
 }
 {{end}}
-{{range .CtxSnippets}}
+{{range .TopicSnippets}}
 {{.}}
 
 {{end}}

@@ -41,6 +41,7 @@ func StripPackageAndImports(src string) (string, error) {
 type PageConfigResult struct {
 	Body        *ast.BlockStmt
 	Compression string
+	Compiler    string
 }
 
 // ExtractClientSideStateBody scans entry.File for a composite literal whose
@@ -88,6 +89,7 @@ func ExtractClientSideStateBody(entry Entry) (PageConfigResult, bool, error) {
 
 		var bodyBlock *ast.BlockStmt
 		var compression string
+		var compiler string
 		var haveCSS bool
 
 		for _, elt := range cl.Elts {
@@ -139,11 +141,20 @@ func ExtractClientSideStateBody(entry Entry) (PageConfigResult, bool, error) {
 				case *ast.SelectorExpr:
 					compression = v.Sel.Name
 				}
+			case "WasmCompiler":
+				switch v := kv.Value.(type) {
+				case *ast.BasicLit:
+					compiler = strings.Trim(v.Value, "\"`")
+				case *ast.Ident:
+					compiler = v.Name
+				case *ast.SelectorExpr:
+					compiler = v.Sel.Name
+				}
 			}
 		}
 
 		if haveCSS && bodyBlock != nil {
-			result = PageConfigResult{Body: bodyBlock, Compression: compression}
+			result = PageConfigResult{Body: bodyBlock, Compression: compression, Compiler: compiler}
 			found = true
 			stopWalk = true
 			return false

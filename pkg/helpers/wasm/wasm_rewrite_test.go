@@ -82,94 +82,94 @@ func TestRewriteAutoKeys_NoChangeWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestRewriteContextCalls_UseContextWithKey(t *testing.T) {
+func TestRewriteTopicCalls_UseTopicWithKey(t *testing.T) {
 	h := &WasmHelper{}
 	structs := []structInfo{{Name: "Page", KeyName: "page"}}
-	got, err := h.rewriteContextCalls("UseContext(PageKey, Page{Pings: 1})", structs)
+	got, err := h.rewriteTopicCalls("UseTopic(PageKey, Page{Pings: 1})", structs)
 	if err != nil {
-		t.Fatalf("rewriteContextCalls: err=%v", err)
+		t.Fatalf("rewriteTopicCalls: err=%v", err)
 	}
-	want := "PageContext(Page{Pings: 1})"
+	want := "PageTopic(Page{Pings: 1})"
 	if got != want {
-		t.Errorf("rewriteContextCalls UseContext+Key:\n got: %q\nwant: %q", got, want)
+		t.Errorf("rewriteTopicCalls UseTopic+Key:\n got: %q\nwant: %q", got, want)
 	}
 }
 
-func TestRewriteContextCalls_UseContextWithNameIdent(t *testing.T) {
+func TestRewriteTopicCalls_UseTopicWithNameIdent(t *testing.T) {
 	h := &WasmHelper{}
 	structs := []structInfo{{Name: "Page", KeyName: "page"}}
-	got, err := h.rewriteContextCalls("UseContext(Page, Page{})", structs)
+	got, err := h.rewriteTopicCalls("UseTopic(Page, Page{})", structs)
 	if err != nil {
-		t.Fatalf("rewriteContextCalls: err=%v", err)
+		t.Fatalf("rewriteTopicCalls: err=%v", err)
 	}
-	want := "PageContext(Page{})"
+	want := "PageTopic(Page{})"
 	if got != want {
-		t.Errorf("rewriteContextCalls UseContext+Name ident:\n got: %q\nwant: %q", got, want)
+		t.Errorf("rewriteTopicCalls UseTopic+Name ident:\n got: %q\nwant: %q", got, want)
 	}
 }
 
-func TestRewriteContextCalls_UseName(t *testing.T) {
+func TestRewriteTopicCalls_UseName(t *testing.T) {
 	h := &WasmHelper{}
 	structs := []structInfo{{Name: "Page", KeyName: "page"}}
-	got, err := h.rewriteContextCalls("UsePage(Page{})", structs)
+	got, err := h.rewriteTopicCalls("UsePage(Page{})", structs)
 	if err != nil {
-		t.Fatalf("rewriteContextCalls: err=%v", err)
+		t.Fatalf("rewriteTopicCalls: err=%v", err)
 	}
-	want := "PageContext(Page{})"
+	want := "PageTopic(Page{})"
 	if got != want {
-		t.Errorf("rewriteContextCalls UseName:\n got: %q\nwant: %q", got, want)
+		t.Errorf("rewriteTopicCalls UseName:\n got: %q\nwant: %q", got, want)
 	}
 }
 
-func TestRewriteContextCalls_UseNameContext(t *testing.T) {
+func TestRewriteTopicCalls_UseNameTopic(t *testing.T) {
 	h := &WasmHelper{}
 	structs := []structInfo{{Name: "Page", KeyName: "page"}}
-	got, err := h.rewriteContextCalls("UsePageContext(Page{})", structs)
+	got, err := h.rewriteTopicCalls("UsePageTopic(Page{})", structs)
 	if err != nil {
-		t.Fatalf("rewriteContextCalls: err=%v", err)
+		t.Fatalf("rewriteTopicCalls: err=%v", err)
 	}
-	want := "PageContext(Page{})"
+	want := "PageTopic(Page{})"
 	if got != want {
-		t.Errorf("rewriteContextCalls UseNameContext:\n got: %q\nwant: %q", got, want)
+		t.Errorf("rewriteTopicCalls UseNameTopic:\n got: %q\nwant: %q", got, want)
 	}
 }
 
-func TestRewriteContextCalls_NoMatchUnknownStruct(t *testing.T) {
+func TestRewriteTopicCalls_NoMatchUnknownStruct(t *testing.T) {
 	h := &WasmHelper{}
 	structs := []structInfo{{Name: "Page", KeyName: "page"}}
 	// "Other" is not in structs, so the call must be left alone.
-	src := "UseContext(Other, Other{})"
-	got, err := h.rewriteContextCalls(src, structs)
+	src := "UseTopic(Other, Other{})"
+	got, err := h.rewriteTopicCalls(src, structs)
 	if err != nil {
-		t.Fatalf("rewriteContextCalls: err=%v", err)
+		t.Fatalf("rewriteTopicCalls: err=%v", err)
 	}
 	if got != src {
-		t.Errorf("rewriteContextCalls should ignore unknown struct names:\n got: %q\nwant: %q", got, src)
+		t.Errorf("rewriteTopicCalls should ignore unknown struct names:\n got: %q\nwant: %q", got, src)
 	}
 }
 
-func TestRewriteContextCalls_MultipleCalls(t *testing.T) {
+func TestRewriteTopicCalls_MultipleCalls(t *testing.T) {
 	h := &WasmHelper{}
 	structs := []structInfo{
 		{Name: "Page", KeyName: "page"},
 		{Name: "User", KeyName: "user"},
 	}
-	src := "UseContext(PageKey, Page{}); UseUser(User{})"
-	got, err := h.rewriteContextCalls(src, structs)
+	src := "UseTopic(PageKey, Page{}); UseUser(User{})"
+	got, err := h.rewriteTopicCalls(src, structs)
 	if err != nil {
-		t.Fatalf("rewriteContextCalls: err=%v", err)
+		t.Fatalf("rewriteTopicCalls: err=%v", err)
 	}
-	want := "PageContext(Page{}); UserContext(User{})"
+	want := "PageTopic(Page{}); UserTopic(User{})"
 	if got != want {
-		t.Errorf("rewriteContextCalls multi:\n got: %q\nwant: %q", got, want)
+		t.Errorf("rewriteTopicCalls multi:\n got: %q\nwant: %q", got, want)
 	}
 }
 
-func TestRewriteContextCalls_UnparseableReturnsError(t *testing.T) {
+func TestRewriteTopicCalls_UnparseableReturnsError(t *testing.T) {
 	h := &WasmHelper{}
 	unparseableSrc := `}}}this is not valid Go{{{{`
 	structs := []structInfo{{Name: "Page", KeyName: "page"}}
-	_, err := h.rewriteContextCalls(unparseableSrc, structs)
+	_, err := h.rewriteTopicCalls(unparseableSrc, structs)
 	if err == nil {
 		t.Fatal("expected error for unparseable source, got nil")
 	}

@@ -6,13 +6,17 @@ import (
 	"strconv"
 )
 
-// GothicSharedContext is a zero-size marker type embedded in context structs.
-type GothicSharedContext struct{}
+// TopicConfig holds per-topic configuration.
+type TopicConfig struct {
+	Name        string
+	Compression string // "GZIP" or "BROTLI"; defaults to "GZIP"
+}
 
-func (GothicSharedContext) isGothicSharedContext() {}
-
-// SharedContext is the compile-time constraint for context types.
-type SharedContext interface{ isGothicSharedContext() }
+// CreateTopic declares a topic. The CLI AST scanner detects this call and
+// generates the concrete typed accessor. At runtime this returns a no-op.
+func CreateTopic[T any](zero T, cfg TopicConfig) func() interface{} {
+	return func() interface{} { return nil }
+}
 
 // ContextKey is a typed context identifier that carries its own codec.
 type ContextKey[T any] struct {

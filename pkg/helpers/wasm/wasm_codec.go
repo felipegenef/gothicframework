@@ -10,7 +10,7 @@ import (
 )
 
 // Codec line generation. Each function returns the encode/decode lines that
-// will be embedded in the generated context_gen.go / wasm_page_main.go for
+// will be embedded in the generated topic_gen.go / wasm_page_main.go for
 // a given struct field. The wire format mirrors pkg/wasm/stubs.go and
 // pkg/wasm/wasm-runtime/runtime/codec.go.
 
@@ -180,8 +180,8 @@ func (h *WasmHelper) codecLines(fi fieldInfo, structNames map[string]bool, alias
 	}
 
 	return "", "", fmt.Errorf(
-		"unsupported type %q — supported: primitives, []T, map[K]V, *T, time.Time, and structs defined in src/context/\n"+
-			"  Tip: add `gothic:\"skip\"` to exclude this field from the context wire format",
+		"unsupported type %q — supported: primitives, []T, map[K]V, *T, time.Time, and structs defined in src/topics/\n"+
+			"  Tip: add `gothic:\"skip\"` to exclude this field from the topic wire format",
 		typ,
 	)
 }
@@ -610,15 +610,15 @@ func (h *WasmHelper) buildKeyVarData(structs []structInfo) []KeyVarData {
 	return result
 }
 
-func (h *WasmHelper) buildCtxTypeData(structs []structInfo) []CtxTypeData {
-	var result []CtxTypeData
+func (h *WasmHelper) buildTopicTypeData(structs []structInfo) []TopicTypeData {
+	var result []TopicTypeData
 	for _, s := range structs {
 		if s.KeyName == "" {
 			continue
 		}
-		td := CtxTypeData{TypeName: h.ctxTypeName(s.Name)}
+		td := TopicTypeData{TypeName: h.topicTypeName(s.Name)}
 		for _, f := range s.Fields {
-			td.Fields = append(td.Fields, CtxFieldData{Name: f.Name, Type: f.Type})
+			td.Fields = append(td.Fields, TopicFieldData{Name: f.Name, Type: f.Type})
 		}
 		result = append(result, td)
 	}
@@ -667,24 +667,24 @@ func (h *WasmHelper) buildPerFieldCodecs(s structInfo, structNames map[string]bo
 	return out, nil
 }
 
-func (h *WasmHelper) buildWasmCtxFuncData(structs []structInfo, aliases map[string]string, refAliases map[string]typeRef) ([]WasmCtxFuncData, error) {
+func (h *WasmHelper) buildWasmTopicFuncData(structs []structInfo, aliases map[string]string, refAliases map[string]typeRef) ([]WasmTopicFuncData, error) {
 	structNames := make(map[string]bool, len(structs))
 	for _, s := range structs {
 		structNames[s.Name] = true
 	}
-	var result []WasmCtxFuncData
+	var result []WasmTopicFuncData
 	for _, s := range structs {
 		if s.KeyName == "" {
 			continue
 		}
-		fd := WasmCtxFuncData{
-			CtorName:   h.ctxFuncName(s.Name),
-			TypeName:   h.ctxTypeName(s.Name),
+		fd := WasmTopicFuncData{
+			CtorName:   h.topicFuncNameFor(s),
+			TypeName:   h.topicTypeName(s.Name),
 			StructName: s.Name,
 			KeyName:    s.KeyName,
 		}
 		for _, f := range s.Fields {
-			fd.Fields = append(fd.Fields, CtxFieldData{Name: f.Name, Type: f.Type})
+			fd.Fields = append(fd.Fields, TopicFieldData{Name: f.Name, Type: f.Type})
 		}
 		codecs, err := h.buildPerFieldCodecs(s, structNames, aliases, refAliases)
 		if err != nil {
@@ -696,19 +696,19 @@ func (h *WasmHelper) buildWasmCtxFuncData(structs []structInfo, aliases map[stri
 	return result, nil
 }
 
-func (h *WasmHelper) buildServerCtxFuncData(structs []structInfo) []ServerCtxFuncData {
-	var result []ServerCtxFuncData
+func (h *WasmHelper) buildServerTopicFuncData(structs []structInfo) []ServerTopicFuncData {
+	var result []ServerTopicFuncData
 	for _, s := range structs {
 		if s.KeyName == "" {
 			continue
 		}
-		fd := ServerCtxFuncData{
-			CtorName:   h.ctxFuncName(s.Name),
-			TypeName:   h.ctxTypeName(s.Name),
+		fd := ServerTopicFuncData{
+			CtorName:   h.topicFuncNameFor(s),
+			TypeName:   h.topicTypeName(s.Name),
 			StructName: s.Name,
 		}
 		for _, f := range s.Fields {
-			fd.Fields = append(fd.Fields, CtxFieldData{Name: f.Name, Type: f.Type})
+			fd.Fields = append(fd.Fields, TopicFieldData{Name: f.Name, Type: f.Type})
 		}
 		result = append(result, fd)
 	}
@@ -726,8 +726,8 @@ func (h *WasmHelper) buildMountFnData(structs []structInfo) []MountFnData {
 			compressionConst = "routes.BROTLI"
 		}
 		result = append(result, MountFnData{
-			FuncName:         "Add" + h.ctxFuncName(s.Name),
-			WasmName:         "ctx-" + s.KeyName,
+			FuncName:         "Add" + h.topicFuncNameFor(s),
+			WasmName:         "topic-" + s.KeyName,
 			Compression:      s.Compression,
 			CompressionConst: compressionConst,
 		})

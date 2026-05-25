@@ -8,7 +8,7 @@ import (
 )
 
 // wasm_templates.go owns the on-disk WASM build templates. The CLI ships an
-// embedded copy of `wasm_page_main.go` and `wasm_ctx_manager_main.go`; the on-
+// embedded copy of `wasm_page_main.go` and `wasm_topic_manager_main.go`; the on-
 // disk versions under `.gothicCli/templates/wasm/` are seeded at `init` time
 // and live in the user's project so they CAN be customised — but in practice
 // most users never touch them, and template drift between the CLI and an
@@ -22,14 +22,16 @@ import (
 // not perturb mtimes on otherwise-clean projects.
 
 //go:embed embedded_templates/wasm_page_main.go.tmpl
-//go:embed embedded_templates/wasm_ctx_manager_main.go.tmpl
+//go:embed embedded_templates/wasm_topic_manager_main.go.tmpl
+//go:embed embedded_templates/topic_gen.go.tmpl
 var wasmTemplateFS embed.FS
 
 // wasmTemplateMap pairs each embedded source path with its target on-disk
 // location under the user's project root.
 var wasmTemplateMap = map[string]string{
-	"embedded_templates/wasm_page_main.go.tmpl":        tmplWasmPageMain,
-	"embedded_templates/wasm_ctx_manager_main.go.tmpl": tmplCtxManagerMain,
+	"embedded_templates/wasm_page_main.go.tmpl":          tmplWasmPageMain,
+	"embedded_templates/wasm_topic_manager_main.go.tmpl": tmplTopicManagerMain,
+	"embedded_templates/topic_gen.go.tmpl":               tmplTopicGen,
 }
 
 // EnsureWasmTemplates refreshes the on-disk WASM templates from the embedded

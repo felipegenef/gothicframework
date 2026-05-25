@@ -5,11 +5,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+
+	wasmruntime "github.com/felipegenef/gothicframework/pkg/wasm"
 )
 
 // Build-output hash cache. Stored at wasmCachePath as a flat
@@ -62,35 +65,64 @@ func (h *WasmHelper) pageInputHash(page WasmPage) string {
 	if data, err := os.ReadFile(page.SourceFile); err == nil {
 		hh.Write(data)
 	}
-	h.feedContextFiles(hh)
+	h.feedTopicFiles(hh)
 	h.feedFile(hh, tmplWasmPageMain)
+	h.feedRuntimeFS(hh)
 	hh.Write([]byte{byte(page.Compression)})
+	hh.Write([]byte{byte(page.Compiler)})
 	return hex.EncodeToString(hh.Sum(nil))
 }
 
-// ctxManagerInputHash hashes all context files, the manager template, and the compression method.
+// ctxManagerInputHash hashes all topic files, the manager template, and the compression method.
 func (h *WasmHelper) ctxManagerInputHash(compression WasmCompression) string {
 	hh := sha256.New()
-	h.feedContextFiles(hh)
-	h.feedFile(hh, tmplCtxManagerMain)
+	h.feedTopicFiles(hh)
+	h.feedFile(hh, tmplTopicManagerMain)
+	h.feedRuntimeFS(hh)
 	hh.Write([]byte{byte(compression)})
 	return hex.EncodeToString(hh.Sum(nil))
 }
 
-func (h *WasmHelper) feedContextFiles(hh io.Writer) {
-	entries, err := os.ReadDir("src/context")
+func (h *WasmHelper) feedTopicFiles(hh io.Writer) {
+	sourceDir, genFile, ok := resolveTopicSourceDir()
+	if !ok {
+		return
+	}
+	entries, err := os.ReadDir(sourceDir)
 	if err != nil {
 		return
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") && e.Name() != "context_gen.go" {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") && e.Name() != genFile {
 			names = append(names, e.Name())
 		}
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if data, err := os.ReadFile(filepath.Join("src/context", name)); err == nil {
+		if data, err := os.ReadFile(filepath.Join(sourceDir, name)); err == nil {
+			hh.Write(data)
+		}
+	}
+}
+
+// feedRuntimeFS hashes the embedded WASM runtime sources so any change to the
+// runtime (events.go, context.go, dom.go, etc.) invalidates the per-page WASM
+// cache. Files are walked in sorted order for deterministic hashing.
+func (h *WasmHelper) feedRuntimeFS(hh io.Writer) {
+	var paths []string
+	_ = fs.WalkDir(wasmruntime.RuntimeFS, "wasm-runtime/runtime", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	sort.Strings(paths)
+	for _, p := range paths {
+		if data, err := wasmruntime.RuntimeFS.ReadFile(p); err == nil {
+			hh.Write([]byte(p))
+			hh.Write([]byte{0})
 			hh.Write(data)
 		}
 	}

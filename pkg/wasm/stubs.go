@@ -13,18 +13,6 @@ import (
 	"math"
 )
 
-// GothicSharedContext is a zero-size marker type embedded in context structs.
-// The CLI reads the name tag on this field to derive the context key name
-// and auto-generates the BinaryKey variable (e.g. var PageCtxKey = BinaryKey[PageCtx](...)).
-// Embedding it also satisfies the SharedContext constraint, which is required by the context API.
-type GothicSharedContext struct{}
-
-func (GothicSharedContext) isGothicSharedContext() {}
-
-// SharedContext is the compile-time constraint for context types.
-// Only structs that embed GothicSharedContext satisfy it.
-type SharedContext interface{ isGothicSharedContext() }
-
 // Observable is a typed reactive state container (server-side no-op).
 // Similar to useState in React — holds a value and notifies observers on change.
 type Observable[T any] struct{ value T }
@@ -115,6 +103,60 @@ func Fetch(url string, config ...FetchConfig) (string, error) { return "", nil }
 // Must be called from inside a goroutine or CreateWasmFunc handler.
 func FetchBytes(url string, config ...FetchConfig) ([]byte, error) { return nil, nil }
 
+// JSValue is a server-side stub for syscall/js.Value.
+// All methods are no-ops; the real implementation lives in the WASM runtime.
+type JSValue struct{}
+
+func JS() JSValue       { return JSValue{} }
+func Window() JSValue   { return JSValue{} }
+func Document() JSValue { return JSValue{} }
+
+func ConsoleLog(args ...any) {}
+
+func GetElementById(id string) JSValue    { return JSValue{} }
+func CreateElement(tag string) JSValue    { return JSValue{} }
+func QuerySelector(sel string) JSValue    { return JSValue{} }
+func QuerySelectorAll(sel string) JSValue { return JSValue{} }
+
+func (v JSValue) Get(key string) JSValue                  { return JSValue{} }
+func (v JSValue) Set(key string, val any)                 {}
+func (v JSValue) Call(method string, args ...any) JSValue { return JSValue{} }
+func (v JSValue) New(args ...any) JSValue                 { return JSValue{} }
+func (v JSValue) String() string                          { return "" }
+func (v JSValue) Int() int                                { return 0 }
+func (v JSValue) Float() float64                          { return 0 }
+func (v JSValue) Bool() bool                              { return false }
+func (v JSValue) IsNull() bool                            { return true }
+func (v JSValue) IsUndefined() bool                       { return true }
+func (v JSValue) Truthy() bool                            { return false }
+func (v JSValue) Index(i int) JSValue                     { return JSValue{} }
+func (v JSValue) SetIndex(i int, val any)                 {}
+func (v JSValue) Length() int                             { return 0 }
+
+func CopyBytesToJS(dst JSValue, src []byte) int { return 0 }
+func CopyBytesToGo(dst []byte, src JSValue) int { return 0 }
+
+// TriggerDownload prompts the browser to download `data` as a file named `filename` with the given MIME type.
+// Server-side no-op.
+func TriggerDownload(filename string, data []byte, mimeType string) {}
+
+// Element tree helpers — server-side no-ops.
+func AppendChild(parent, child JSValue) {}
+func RemoveElement(el JSValue)          {}
+func ClickElement(el JSValue)           {}
+
+// WriteClipboard writes text to the system clipboard. Server-side no-op.
+func WriteClipboard(text string) {}
+
+// ExecJS executes a JavaScript snippet in the browser. Server-side no-op.
+func ExecJS(script string) {}
+
+// Navigation helpers — server-side no-ops.
+func Navigate(url string)         {}
+func Reload()                     {}
+func PushState(url, title string) {}
+func GoBack()                     {}
+
 // Event registration — no-ops on the server.
 
 func CreateWasmFunc(name string, fn func())            {}
@@ -131,7 +173,7 @@ type ContextKey[T any] struct {
 	decode func(string) T
 }
 
-// BinaryKey is used exclusively by CLI-generated code in src/context/context_gen.go.
+// BinaryKey is used exclusively by CLI-generated code in src/topics/topic_gen.go.
 func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decoder) T) ContextKey[T] {
 	return ContextKey[T]{
 		Name: name,
@@ -150,6 +192,20 @@ func BinaryKey[T any](name string, encode func(T, *Encoder), decode func(*Decode
 // AutoKey is rewritten to BinaryKey by the CLI before TinyGo compiles.
 // Server-side this is a no-op stub so the code compiles.
 func AutoKey[T any](name string) ContextKey[T] { return ContextKey[T]{Name: name} }
+
+// TopicConfig holds per-topic configuration. The CLI AST scanner reads the
+// Name and Compression fields from CreateTopic call sites to drive code
+// generation.
+type TopicConfig struct {
+	Name        string
+	Compression string // "GZIP" or "BROTLI"; defaults to "GZIP"
+}
+
+// CreateTopic declares a topic. The CLI AST scanner detects this call and
+// generates the concrete typed accessor. Server-side this is a no-op stub.
+func CreateTopic[T any](zero T, cfg TopicConfig) func() interface{} {
+	return func() interface{} { return nil }
+}
 
 // Encoder writes a little-endian binary stream (server-side stub — mirrors runtime.Encoder).
 type Encoder struct{ Buf []byte }
@@ -314,4 +370,27 @@ func (f *ObservableField[T]) Get() T                 { return f.sig.Get() }
 func (f *ObservableField[T]) Peek() T                { return f.sig.value }
 func (f *ObservableField[T]) Set(v T)                { f.sig.value = v }
 func (f *ObservableField[T]) ApplyExternal(v T)      { f.sig.Set(v) }
+
+// LocalStorage helpers — server-side no-ops.
+func LocalStorageSet(key, value string) {}
+func LocalStorageGet(key string) string { return "" }
+func LocalStorageRemove(key string)     {}
+
+// SessionStorage helpers — server-side no-ops.
+func SessionStorageSet(key, value string) {}
+func SessionStorageGet(key string) string { return "" }
+func SessionStorageRemove(key string)     {}
+
+// CookieOptions configures CookieSet behaviour.
+type CookieOptions struct {
+	MaxAge   int    // seconds; 0 = session cookie
+	Path     string // defaults to "/"
+	SameSite string // "Strict", "Lax", or "None"
+	Secure   bool
+}
+
+// Cookie helpers — server-side no-ops.
+func CookieSet(key, value string, opts ...CookieOptions) {}
+func CookieGet(key string) string                        { return "" }
+func CookieDelete(key string)                            {}
 
