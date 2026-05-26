@@ -57,6 +57,9 @@ func CopyBytesToGo(dst []byte, src JSValue) int { return 0 }
 
 func TriggerDownload(filename string, data []byte, mimeType string) {}
 
+func AddEventListenerWithEvent(el JSValue, event string, fn func(JSValue)) {}
+func AddEventListener(el JSValue, event string, fn func())                 {}
+
 func AppendChild(parent, child JSValue) {}
 func RemoveElement(el JSValue)          {}
 func ClickElement(el JSValue)           {}

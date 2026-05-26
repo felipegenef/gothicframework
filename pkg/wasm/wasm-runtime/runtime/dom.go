@@ -457,6 +457,37 @@ func TriggerDownload(filename string, data []byte, mimeType string) {
 	js.Global().Get("URL").Call("revokeObjectURL", url)
 }
 
+// AddEventListenerWithEvent attaches a persistent event listener to el for the given event name.
+// fn receives the browser Event object as a JSValue, giving access to event properties and methods
+// such as preventDefault(), stopPropagation(), event.target, event.key, event.detail, etc.
+// The js.Func is retained in keep and never released — persistent listeners must stay
+// alive for the lifetime of the page; releasing them would panic on the next event.
+func AddEventListenerWithEvent(el JSValue, event string, fn func(JSValue)) {
+	f := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		var ev JSValue
+		if len(args) > 0 {
+			ev = JSValue{args[0]}
+		}
+		fn(ev)
+		return nil
+	})
+	keep = append(keep, f)
+	el.v.Call("addEventListener", event, f)
+}
+
+// AddEventListener attaches a persistent event listener to el for the given event name.
+// fn is called with no arguments each time the event fires.
+// The js.Func is retained in keep and never released — persistent listeners must stay
+// alive for the lifetime of the page; releasing them would panic on the next event.
+func AddEventListener(el JSValue, event string, fn func()) {
+	f := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		fn()
+		return nil
+	})
+	keep = append(keep, f)
+	el.v.Call("addEventListener", event, f)
+}
+
 // Element tree helpers.
 func AppendChild(parent, child JSValue) { parent.v.Call("appendChild", child.v) }
 func RemoveElement(el JSValue)          { el.v.Call("remove") }
