@@ -140,6 +140,47 @@ func CopyBytesToGo(dst []byte, src JSValue) int { return 0 }
 // Server-side no-op.
 func TriggerDownload(filename string, data []byte, mimeType string) {}
 
+// AddEventListenerWithEvent attaches a persistent event listener to el for the given event name.
+// fn receives the browser Event object as a JSValue, giving access to event properties and methods.
+// Use this when you need to inspect or interact with the event itself — call preventDefault,
+// read event.target, event.key, event.clientX, event.detail, etc.
+// The listener stays alive for the lifetime of the page — it is never removed automatically.
+//
+// Example:
+//
+//	AddEventListenerWithEvent(form, "submit", func(e JSValue) {
+//	    e.Call("preventDefault")               // stop the default form submission
+//	    val := e.Get("target").Get("value").String()
+//	})
+//
+//	AddEventListenerWithEvent(Document(), "keydown", func(e JSValue) {
+//	    if e.Get("key").String() == "Escape" {
+//	        // close modal, etc.
+//	    }
+//	})
+func AddEventListenerWithEvent(el JSValue, event string, fn func(JSValue)) {}
+
+// AddEventListener attaches a persistent event listener to el for the given event name.
+// fn is called with no arguments each time the event fires.
+// The listener stays alive for the lifetime of the page — it is never removed automatically.
+//
+// Common use cases: reacting to browser events (click, input, toggle) or framework
+// events (htmx:afterSwap, htmx:beforeSwap) on any JSValue element including Document()
+// and Window().
+//
+// Example:
+//
+//	body := Document().Get("body")
+//	AddEventListener(body, "htmx:afterSwap", func() {
+//	    // re-sync DOM after HTMX swaps content
+//	})
+//
+//	details := QuerySelector("details#menu")
+//	AddEventListener(details, "toggle", func() {
+//	    // react to open/close state changes
+//	})
+func AddEventListener(el JSValue, event string, fn func()) {}
+
 // Element tree helpers — server-side no-ops.
 func AppendChild(parent, child JSValue) {}
 func RemoveElement(el JSValue)          {}
