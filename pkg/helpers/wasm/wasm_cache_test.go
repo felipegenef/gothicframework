@@ -183,6 +183,125 @@ func TestFeedHandwrittenPackageFiles_TestFilesExcluded(t *testing.T) {
 	}
 }
 
+// TestPageInputHash_LocalPackageDirsModificationInvalidates ensures that
+// modifying a .go file inside a directory listed in page.LocalPackageDirs
+// changes the page hash. This is the Phase 5 cross-package cache fix.
+func TestPageInputHash_LocalPackageDirsModificationInvalidates(t *testing.T) {
+	dir := withTempCwd(t)
+	srcPath := filepath.Join(dir, "page.go")
+	if err := os.WriteFile(srcPath, []byte("package x\n"), 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	pkgDir := filepath.Join(dir, "pkg_helper")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatalf("mkdir pkg_helper: %v", err)
+	}
+	helperPath := filepath.Join(pkgDir, "helper.go")
+	if err := os.WriteFile(helperPath, []byte("package pkg_helper\nvar V = 1\n"), 0644); err != nil {
+		t.Fatalf("write helper.go: %v", err)
+	}
+
+	h := DefaultWasmHelper()
+	page := WasmPage{
+		SourceFile:       srcPath,
+		Compression:      WasmCompressionGzip,
+		LocalPackageDirs: []string{pkgDir},
+	}
+	before := h.pageInputHash(page)
+
+	if err := os.WriteFile(helperPath, []byte("package pkg_helper\nvar V = 2\n"), 0644); err != nil {
+		t.Fatalf("rewrite helper.go: %v", err)
+	}
+	after := h.pageInputHash(page)
+	if before == after {
+		t.Errorf("expected hash to change when local package file changes; both were %q", before)
+	}
+}
+
+// TestPageInputHash_RemovingLocalPackageDirStopsTracking ensures that once a
+// directory is removed from LocalPackageDirs, edits there no longer affect the
+// page hash.
+func TestPageInputHash_RemovingLocalPackageDirStopsTracking(t *testing.T) {
+	dir := withTempCwd(t)
+	srcPath := filepath.Join(dir, "page.go")
+	if err := os.WriteFile(srcPath, []byte("package x\n"), 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	pkgDir := filepath.Join(dir, "pkg_helper")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatalf("mkdir pkg_helper: %v", err)
+	}
+	helperPath := filepath.Join(pkgDir, "helper.go")
+	if err := os.WriteFile(helperPath, []byte("package pkg_helper\nvar V = 1\n"), 0644); err != nil {
+		t.Fatalf("write helper.go: %v", err)
+	}
+
+	h := DefaultWasmHelper()
+	pageWithout := WasmPage{
+		SourceFile:  srcPath,
+		Compression: WasmCompressionGzip,
+	}
+	before := h.pageInputHash(pageWithout)
+
+	if err := os.WriteFile(helperPath, []byte("package pkg_helper\nvar V = 2\n"), 0644); err != nil {
+		t.Fatalf("rewrite helper.go: %v", err)
+	}
+	after := h.pageInputHash(pageWithout)
+	if before != after {
+		t.Errorf("expected hash unchanged when dir is not tracked; got %q vs %q", before, after)
+	}
+}
+
+// TestPageInputHash_LocalPackageDirsOrderIndependent ensures that, since the
+// scanner sorts LocalPackageDirs before storing, hashes produced from the same
+// (sorted) input list are identical regardless of original discovery order.
+// We simulate the scanner contract by sorting inside the test before feeding.
+func TestPageInputHash_LocalPackageDirsOrderIndependent(t *testing.T) {
+	dir := withTempCwd(t)
+	srcPath := filepath.Join(dir, "page.go")
+	if err := os.WriteFile(srcPath, []byte("package x\n"), 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	mk := func(name, body string) string {
+		d := filepath.Join(dir, name)
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "f.go"), []byte(body), 0644); err != nil {
+			t.Fatalf("write %s/f.go: %v", name, err)
+		}
+		return d
+	}
+	a := mk("a_pkg", "package a_pkg\nvar A = 1\n")
+	b := mk("b_pkg", "package b_pkg\nvar B = 1\n")
+	c := mk("c_pkg", "package c_pkg\nvar C = 1\n")
+
+	h := DefaultWasmHelper()
+
+	sorted1 := []string{a, b, c}
+	sorted2 := []string{c, b, a}
+	// Mimic the scanner sorting contract before storing on the Page.
+	cp := append([]string(nil), sorted2...)
+	sortStrings(cp)
+
+	p1 := WasmPage{SourceFile: srcPath, Compression: WasmCompressionGzip, LocalPackageDirs: sorted1}
+	p2 := WasmPage{SourceFile: srcPath, Compression: WasmCompressionGzip, LocalPackageDirs: cp}
+
+	h1 := h.pageInputHash(p1)
+	h2 := h.pageInputHash(p2)
+	if h1 != h2 {
+		t.Errorf("expected identical hashes for same sorted LocalPackageDirs; got %q vs %q", h1, h2)
+	}
+}
+
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
+}
+
 // TestFeedHandwrittenPackageFiles_OrderingDeterministic ensures that two
 // directories holding the same hand-written sibling files produce the same
 // hash regardless of the order in which the files happened to be written

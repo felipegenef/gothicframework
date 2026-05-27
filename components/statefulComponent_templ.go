@@ -11,7 +11,7 @@ import templruntime "github.com/a-h/templ/runtime"
 import "log"
 import "encoding/json"
 
-import routes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+import routes "github.com/felipegenef/gothicframework/v2/pkg/helpers/routes"
 
 type StatefulComponentData map[string]any
 

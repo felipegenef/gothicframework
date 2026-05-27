@@ -3,6 +3,7 @@ package helpers
 import (
 	"bytes"
 	"context"
+	"embed"
 	"encoding/gob"
 	"fmt"
 	"io"
@@ -16,9 +17,20 @@ import (
 	"time"
 
 	"github.com/a-h/templ"
-	helpers "github.com/felipegenef/gothicframework/pkg/helpers"
+	helpers "github.com/felipegenef/gothicframework/v2/pkg/helpers"
 	"github.com/go-chi/chi/v5"
 )
+
+// routesGenTemplateFS embeds the generator template for src/routes/routes_gen.go.
+// Pre-v2.17 CLIs seeded this onto disk under `.gothicCli/templates/routes_gen.go`
+// where users could (in theory) edit it. In practice nobody ever did, and drift
+// between the CLI's expectations and the on-disk copy caused silent breakage,
+// so it now lives inside the CLI binary.
+//
+//go:embed routes_gen.go.tmpl
+var routesGenTemplateFS embed.FS
+
+const routesGenTemplatePath = "routes_gen.go.tmpl"
 
 type ConfigType int
 
@@ -390,7 +402,7 @@ type FileBasedRouteHelper struct {
 func NewFileBasedRouteHelper() FileBasedRouteHelper {
 	return FileBasedRouteHelper{
 		OutputFile:            "./src/routes/routes_gen.go",
-		TemplateFile:          "./.gothicCli/templates/routes_gen.go",
+		TemplateFile:          routesGenTemplatePath,
 		ApiRoutesFolder:       "./src/api",
 		ComponentRoutesFolder: "./src/components",
 		PageRoutesFolder:      "./src/pages",
@@ -417,7 +429,7 @@ func (helper *FileBasedRouteHelper) Render(goModName string) error {
 	helper.pruneMissingFiles()
 
 	// 5️⃣ Render template
-	return helper.Template.UpdateFromTemplate(helper.TemplateFile, helper.OutputFile, helper.TemplateInfo)
+	return helper.Template.UpdateFromTemplateFS(routesGenTemplateFS, helper.TemplateFile, helper.OutputFile, helper.TemplateInfo)
 }
 
 func (helper *FileBasedRouteHelper) collectApiRoutesInfo(goModName string) error {

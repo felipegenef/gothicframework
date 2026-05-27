@@ -11,9 +11,9 @@ import (
 	"regexp"
 	"strings"
 
-	gothci_cli "github.com/felipegenef/gothicframework/pkg/cli"
-	cli_data "github.com/felipegenef/gothicframework/pkg/data"
-	helpers "github.com/felipegenef/gothicframework/pkg/helpers"
+	gothci_cli "github.com/felipegenef/gothicframework/v2/pkg/cli"
+	cli_data "github.com/felipegenef/gothicframework/v2/pkg/data"
+	helpers "github.com/felipegenef/gothicframework/v2/pkg/helpers"
 	"github.com/spf13/cobra"
 	"github.com/teris-io/shortid"
 	"golang.org/x/sync/errgroup"
@@ -77,7 +77,7 @@ func (command *InitCommand) CreateNewGothicApp(data cli_data.GothicCliData) erro
 	if _, err := command.cli.Tailwind.EnsureBinary(); err != nil {
 		return fmt.Errorf("error downloading tailwind binary: %w", err)
 	}
-	if err := command.cli.InitializeModule(command.gothicCliData.GoModName, CURRENT_COMMIT); err != nil {
+	if err := command.cli.InitializeModule(command.gothicCliData.GoModName, CURRENT_VERSION); err != nil {
 		return err
 	}
 	if err := command.cli.Templ.Render(); err != nil {

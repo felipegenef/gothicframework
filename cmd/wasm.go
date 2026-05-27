@@ -5,7 +5,7 @@ import (
 	"os"
 	"os/exec"
 
-	gothic_cli "github.com/felipegenef/gothicframework/pkg/cli"
+	gothic_cli "github.com/felipegenef/gothicframework/v2/pkg/cli"
 	"github.com/spf13/cobra"
 )
 

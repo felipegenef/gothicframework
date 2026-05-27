@@ -3,8 +3,8 @@ package helpers
 import (
 	"runtime"
 
-	helpers "github.com/felipegenef/gothicframework/pkg/helpers"
-	"github.com/felipegenef/gothicframework/pkg/helpers/wasm/astx"
+	helpers "github.com/felipegenef/gothicframework/v2/pkg/helpers"
+	"github.com/felipegenef/gothicframework/v2/pkg/helpers/wasm/astx"
 )
 
 const tinyGoVersion = "0.41.1"
@@ -51,6 +51,11 @@ type WasmPage struct {
 	Compression WasmCompression
 	Compiler    WasmCompilerChoice
 	IsComponent bool // true when scanned from componentsDir, false for pagesDir
+	// LocalPackageDirs lists absolute directories of local (user-module)
+	// packages whose helpers/types are referenced by this page. Used by the
+	// WASM cache to invalidate when a transitively imported local package
+	// changes on disk. Sorted alphabetically and de-duplicated by the scanner.
+	LocalPackageDirs []string
 }
 
 func NewWasmHelper(goos, goarch string) WasmHelper {

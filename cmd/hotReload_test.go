@@ -3,7 +3,7 @@ package cmd
 import (
 	"testing"
 
-	gothic_cli "github.com/felipegenef/gothicframework/pkg/cli"
+	gothic_cli "github.com/felipegenef/gothicframework/v2/pkg/cli"
 	"github.com/fsnotify/fsnotify"
 )
 

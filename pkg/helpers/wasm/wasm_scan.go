@@ -3,11 +3,14 @@ package helpers
 import (
 	"fmt"
 	"go/ast"
+	"go/types"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
-	"github.com/felipegenef/gothicframework/pkg/helpers/wasm/astx"
+	"github.com/felipegenef/gothicframework/v2/pkg/helpers/wasm/astx"
+	"golang.org/x/tools/go/packages"
 )
 
 // Page scanning: walk pagesDir and componentsDir looking for *_templ.go files
@@ -86,10 +89,12 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 		return WasmPage{}, false, nil
 	}
 
-	helperDecls, _, err := astx.ExtractUsedHelpers(entry.Pkg, res.Body)
+	helperDecls, helperPkgs, err := astx.ExtractUsedHelpers(entry.Pkg, res.Body)
 	if err != nil {
 		return WasmPage{}, false, fmt.Errorf("wasm: extract helpers in %s: %w", path, err)
 	}
+
+	localPackageDirs := collectLocalPackageDirs(entry.Pkg, helperPkgs)
 
 	importSpecs, err := astx.ExtractUsedImports(entry.Pkg, res.Body)
 	if err != nil {
@@ -154,24 +159,80 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 		Helpers:     helpers,
 		HttpPath:    httpPath,
 		OutputName:  outputName,
-		Compression: compression,
-		Compiler:    compiler,
+		Compression:      compression,
+		Compiler:         compiler,
+		LocalPackageDirs: localPackageDirs,
 	}, true, nil
 }
 
-// stdImportLines filters import specs to keep only standard-library imports
-// (those whose first path segment contains no "."), formatted as the
-// legacy WasmPage.Imports lines expect: either `"path"` or `alias "path"`.
+// collectLocalPackageDirs returns the sorted, de-duplicated absolute directories
+// of every local (user-module) package referenced by the helpers extracted from
+// the page body. Stdlib, third-party, and vendored packages are skipped. These
+// directories feed into the per-page WASM cache hash so a change to any file in
+// an imported local package invalidates the cache.
+func collectLocalPackageDirs(pagePkg *packages.Package, helperPkgs []*types.PkgName) []string {
+	if pagePkg == nil || len(helperPkgs) == 0 {
+		return nil
+	}
+	userModulePath, _, err := ReadUserModulePath(".")
+	if err != nil || userModulePath == "" {
+		return nil
+	}
+	prefix := userModulePath + "/"
+
+	seen := make(map[string]struct{}, len(helperPkgs))
+	for _, pn := range helperPkgs {
+		if pn == nil {
+			continue
+		}
+		imported := pn.Imported()
+		if imported == nil {
+			continue
+		}
+		path := imported.Path()
+		if path != userModulePath && !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		loadedPkg, ok := pagePkg.Imports[path]
+		if !ok || loadedPkg == nil {
+			continue
+		}
+		if loadedPkg.Module != nil && loadedPkg.Module.Path != userModulePath {
+			continue
+		}
+		if len(loadedPkg.GoFiles) == 0 {
+			continue
+		}
+		dir := filepath.Dir(loadedPkg.GoFiles[0])
+		if strings.Contains(dir, string(os.PathSeparator)+"vendor"+string(os.PathSeparator)) {
+			continue
+		}
+		absDir, err := filepath.Abs(dir)
+		if err != nil {
+			absDir = dir
+		}
+		seen[absDir] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	dirs := make([]string, 0, len(seen))
+	for d := range seen {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// stdImportLines formats import specs into the legacy WasmPage.Imports line
+// format: either `"path"` or `alias "path"`. Previously this filtered out
+// non-stdlib imports, but with module bridging the temp build can resolve
+// user-project and third-party imports too, so all imports pass through.
 func stdImportLines(specs []*ast.ImportSpec) []string {
 	var out []string
 	for _, sp := range specs {
 		if sp.Path == nil {
 			continue
-		}
-		path := strings.Trim(sp.Path.Value, "\"")
-		first := strings.SplitN(path, "/", 2)[0]
-		if strings.Contains(first, ".") {
-			continue // third-party
 		}
 		line := sp.Path.Value // already quoted
 		if sp.Name != nil && sp.Name.Name != "" {

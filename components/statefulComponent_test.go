@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	routes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+	routes "github.com/felipegenef/gothicframework/v2/pkg/helpers/routes"
 )
 
 // renderStatefulComponent renders the StatefulComponent templ component to a

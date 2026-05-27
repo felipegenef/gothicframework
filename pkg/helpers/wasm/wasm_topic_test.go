@@ -129,7 +129,7 @@ func parseFile(src string) *ast.File {
 
 func TestCollectCreateTopicMetas_NamedVar(t *testing.T) {
 	src := `package p
-import "github.com/felipegenef/gothicframework/pkg/wasm"
+import "github.com/felipegenef/gothicframework/v2/pkg/wasm"
 var PageTopic = wasm.CreateTopic(Page{}, wasm.TopicConfig{Name: "page", Compression: "BROTLI"})`
 	f := parseFile(src)
 	metas := collectCreateTopicMetas(f)

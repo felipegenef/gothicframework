@@ -2,7 +2,7 @@
 // Import this package with a dot import in page files so the state function
 // compiles server-side:
 //
-//	import . "github.com/felipegenef/gothicframework/pkg/wasm"
+//	import . "github.com/felipegenef/gothicframework/v2/pkg/wasm"
 //
 // At WASM compile time the framework substitutes the real TinyGo implementation
 // (signal tracking, DOM manipulation, JS event registration) from the embedded

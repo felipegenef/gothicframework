@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	gothic_cli "github.com/felipegenef/gothicframework/pkg/cli"
-	"github.com/felipegenef/gothicframework/pkg/data"
+	gothic_cli "github.com/felipegenef/gothicframework/v2/pkg/cli"
+	"github.com/felipegenef/gothicframework/v2/pkg/data"
 )
 
 func runInitInDir(t *testing.T, dir string) error {
@@ -36,11 +36,8 @@ func TestInitCreatesAllTemplateFiles(t *testing.T) {
 		t.Fatalf("initializeProject: %v", err)
 	}
 
+	// User-facing deployment templates that must still be seeded onto disk.
 	expected := []string{
-		".gothicCli/templates/wasm/topic_gen.go",
-		".gothicCli/templates/wasm/wasm_page_main.go",
-		".gothicCli/templates/wasm/wasm_topic_manager_main.go",
-		".gothicCli/templates/routes_gen.go",
 		".gothicCli/templates/Dockerfile-template",
 		".gothicCli/templates/samconfig-template.toml",
 		".gothicCli/templates/sam-template.yaml",
@@ -48,6 +45,21 @@ func TestInitCreatesAllTemplateFiles(t *testing.T) {
 	for _, f := range expected {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("missing template file: %s", f)
+		}
+	}
+
+	// As of v2.17 these four templates ship inside the CLI binary's embed.FS
+	// and must NOT be written to the user's project tree (they are an
+	// implementation detail; historic on-disk drift caused silent breakage).
+	mustNotExist := []string{
+		".gothicCli/templates/wasm/topic_gen.go",
+		".gothicCli/templates/wasm/wasm_page_main.go",
+		".gothicCli/templates/wasm/wasm_topic_manager_main.go",
+		".gothicCli/templates/routes_gen.go",
+	}
+	for _, f := range mustNotExist {
+		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+			t.Errorf("template %s should be embedded, not written to disk", f)
 		}
 	}
 }

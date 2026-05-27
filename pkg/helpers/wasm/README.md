@@ -11,6 +11,40 @@ The **user-facing API** (what you actually call inside `ClientSideState`) lives 
 
 ---
 
+## Module Linking — external imports inside `ClientSideState`
+
+`ClientSideState` is **not** restricted to the Go standard library. Any local package from the user's module (e.g. `myapp/pkg/wasmutil`, a shared templ component, a project-local codec) can be imported and used inside `ClientSideState`. This includes transitive imports — if a local package you import pulls in another local package, that one is included too.
+
+### How it works
+
+When the WASM build runs, the pipeline writes a temporary `go.mod` (under a per-build temp directory) that contains a `replace` directive pointing at the user's project root. TinyGo is then invoked from inside that temp directory:
+
+```
+tempModDir/
+  go.mod        ← module wasm-runtime
+                  replace myapp => /abs/path/to/users/project
+  main.go       ← generated WASM entry point importing myapp/...
+```
+
+Because the `replace` resolves the user's module path to the on-disk project, TinyGo sees the user's full package graph and can compile any local import, not just the entry point's same-package symbols. See `writeModuleBridge` in `wasm_build.go` for the implementation.
+
+### Subprocess environment
+
+The TinyGo (and standard-`go` for `WasmCompiler: Golang`) subprocess is invoked with:
+
+- `GOWORK=off` — ignore any parent `go.work` file so the temp module is resolved in isolation.
+- `GOFLAGS=-mod=mod` — allow `go.mod` rewrites needed by the temp module bridge.
+
+### `go mod vendor` fallback
+
+If the first build attempt fails with a missing-module error (typical when the user's project uses vendored dependencies and the bridge module cannot reach the parent project's `vendor/` tree), the pipeline automatically retries after running `go mod vendor` inside `tempModDir`. See `runWithVendorFallback` in `wasm_build.go`.
+
+### Constraints (TinyGo, not Gothic)
+
+TinyGo itself does not implement every Go standard library package — `net/http`, `crypto/tls`, `os/exec`, and parts of `reflect` are common gaps. If a local package transitively imports an unsupported stdlib symbol, TinyGo emits a sensible build error at the unsupported import site. Use `WasmCompiler: routes.Golang` to fall back to the standard Go compiler when full stdlib coverage is needed.
+
+---
+
 # WASM Hooks Reference
 
 All hooks are available via the dot import in any `ClientSideState` function:

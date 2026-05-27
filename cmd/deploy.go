@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	gothic_cli "github.com/felipegenef/gothicframework/pkg/cli"
-	"github.com/felipegenef/gothicframework/pkg/helpers"
+	gothic_cli "github.com/felipegenef/gothicframework/v2/pkg/cli"
+	"github.com/felipegenef/gothicframework/v2/pkg/helpers"
 
 	"github.com/spf13/cobra"
 )

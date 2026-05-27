@@ -3,10 +3,10 @@
 package {{.PkgName}}
 
 import (
-	. "github.com/felipegenef/gothicframework/pkg/wasm"
+	. "github.com/felipegenef/gothicframework/v2/pkg/wasm"
 {{- if .HasTopics}}
 	"github.com/a-h/templ"
-	routes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+	routes "github.com/felipegenef/gothicframework/v2/pkg/helpers/routes"
 {{- end}}
 {{- if .HasTime}}
 	"time"

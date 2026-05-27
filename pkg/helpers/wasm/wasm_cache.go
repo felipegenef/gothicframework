@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	wasmruntime "github.com/felipegenef/gothicframework/pkg/wasm"
+	wasmruntime "github.com/felipegenef/gothicframework/v2/pkg/wasm"
 )
 
 // Build-output hash cache. Stored at wasmCachePath as a flat
@@ -66,8 +66,14 @@ func (h *WasmHelper) pageInputHash(page WasmPage) string {
 		hh.Write(data)
 	}
 	h.feedHandwrittenPackageFiles(hh, filepath.Dir(page.SourceFile), page.SourceFile)
+	// Hash hand-written files in every local package contributing helpers to
+	// this page, so changes in cross-package dependencies invalidate the cache.
+	// page.LocalPackageDirs is pre-sorted by the scanner for determinism.
+	for _, dir := range page.LocalPackageDirs {
+		h.feedHandwrittenPackageFiles(hh, dir, "")
+	}
 	h.feedTopicFiles(hh)
-	h.feedFile(hh, tmplWasmPageMain)
+	h.feedEmbeddedTemplate(hh, tmplWasmPageMain)
 	h.feedRuntimeFS(hh)
 	hh.Write([]byte{byte(page.Compression)})
 	hh.Write([]byte{byte(page.Compiler)})
@@ -128,7 +134,7 @@ func (h *WasmHelper) feedHandwrittenPackageFiles(hh io.Writer, dir string, exclu
 func (h *WasmHelper) topicManagerInputHash(compression WasmCompression) string {
 	hh := sha256.New()
 	h.feedTopicFiles(hh)
-	h.feedFile(hh, tmplTopicManagerMain)
+	h.feedEmbeddedTemplate(hh, tmplTopicManagerMain)
 	h.feedRuntimeFS(hh)
 	hh.Write([]byte{byte(compression)})
 	return hex.EncodeToString(hh.Sum(nil))
@@ -181,6 +187,16 @@ func (h *WasmHelper) feedRuntimeFS(hh io.Writer) {
 
 func (h *WasmHelper) feedFile(hh io.Writer, path string) {
 	if data, err := os.ReadFile(path); err == nil {
+		hh.Write(data)
+	}
+}
+
+// feedEmbeddedTemplate hashes a template that lives inside the CLI binary's
+// embed.FS rather than on disk. This is used by the WASM cache so that
+// upgrading the CLI (which can change the embedded template bytes) properly
+// invalidates per-page and per-manager caches.
+func (h *WasmHelper) feedEmbeddedTemplate(hh io.Writer, embedPath string) {
+	if data, err := WasmTemplateFS.ReadFile(embedPath); err == nil {
 		hh.Write(data)
 	}
 }
