@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var CURRENT_VERSION string = "v2.16.3"
+var CURRENT_VERSION string = "v2.16.4"
 
 // CURRENT_COMMIT is the Go pseudo-version of the gothicframework module that
 // ships with this binary. Used by init to pin the exact version before go mod

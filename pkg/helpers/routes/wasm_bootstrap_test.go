@@ -253,3 +253,91 @@ func TestInjectWasmEnvelope_UniqueAcrossCalls(t *testing.T) {
 		t.Errorf("envelope B's selector does not carry envelope B's instance id: %s", b)
 	}
 }
+
+// TestInjectWasmBootstrap_HxBoostFallbackSelector is a regression guard for the
+// hx-boost navigation fix. When HTMX boosts a navigation it swaps the <body>
+// innerHTML but NOT the <body> element's attributes, so the new page's body
+// still carries the previous page's data-gothic-wasm value. Without a
+// fallback, document.querySelector('body[data-gothic-wasm="<new>"]') returns
+// null and WASM bootstrap silently no-ops on every boosted navigation.
+//
+// The fix wraps the primary selector in a `(querySelector(...) || fallback())`
+// expression where the fallback grabs document.body and updates its
+// data-gothic-wasm attribute to the current page's wasm name. This test must
+// FAIL if the findEl JS is ever reverted to the pre-fix single-selector form.
+func TestInjectWasmBootstrap_HxBoostFallbackSelector(t *testing.T) {
+	const wasmName = "login-page"
+	in := []byte(`<html><body data-gothic-wasm="some-previous-page">x</body></html>`)
+	out := injectWasmBootstrap(in, wasmName, GZIP, GothicTinyGo, "abc")
+
+	// Branch 1: the primary selector must still target a body that already
+	// carries the correct data-gothic-wasm (the non-boosted, fresh-load case).
+	primary := `document.querySelector('body[data-gothic-wasm="` + wasmName + `"]')`
+	if !bytes.Contains(out, []byte(primary)) {
+		t.Errorf("expected primary selector %q in bootstrap, got: %s", primary, out)
+	}
+
+	// Branch 2: the fallback must stamp the current wasmName onto document.body
+	// so post-hx-boost navigations heal the attribute and bootstrap succeeds.
+	fallback := `setAttribute('data-gothic-wasm','` + wasmName + `')`
+	if !bytes.Contains(out, []byte(fallback)) {
+		t.Errorf("expected hx-boost fallback %q in bootstrap, got: %s", fallback, out)
+	}
+
+	// And the fallback must consult document.body — not, say, document.head —
+	// because hx-boost swaps body innerHTML.
+	if !bytes.Contains(out, []byte(`document.body`)) {
+		t.Errorf("expected fallback to consult document.body, got: %s", out)
+	}
+
+	// Extract the findEl expression — the right-hand side of `var el=(...);` —
+	// and assert it is a single, syntactically self-contained JS expression so
+	// the inline `var el=(<findEl>);` assignment cannot break the bootstrap
+	// script. We use a regex anchored on the surrounding `var el=(` / `);`
+	// markers that wrap findEl in the generated template.
+	re := regexp.MustCompile(`var el=\(([\s\S]*?)\);\s*if\(!el\)return;`)
+	m := re.FindSubmatch(out)
+	if m == nil {
+		t.Fatalf("could not locate `var el=(<findEl>);` in bootstrap output: %s", out)
+	}
+	findEl := m[1]
+
+	// Both branches must live inside the findEl expression, not somewhere else
+	// in the script. A revert to the pre-fix form would drop the fallback from
+	// here and this assertion would fail.
+	if !bytes.Contains(findEl, []byte(primary)) {
+		t.Errorf("findEl expression missing primary selector branch; got %q", findEl)
+	}
+	if !bytes.Contains(findEl, []byte(fallback)) {
+		t.Errorf("findEl expression missing hx-boost fallback branch; got %q", findEl)
+	}
+
+	// The two branches must be joined by `||` so the fallback only fires when
+	// the primary selector returns null. Any other join (`&&`, `;`, etc.) would
+	// either be a syntax error or change the semantics.
+	if !bytes.Contains(findEl, []byte(`||`)) {
+		t.Errorf("findEl branches must be joined by ||, got %q", findEl)
+	}
+
+	// Bracket balance check: the findEl expression must be a single self-
+	// contained expression with no unclosed parens/braces/brackets and no
+	// stray top-level semicolons that would break `var el=(<findEl>);`.
+	if open, close := bytes.Count(findEl, []byte("(")), bytes.Count(findEl, []byte(")")); open != close {
+		t.Errorf("findEl has unbalanced parens (%d open, %d close): %q", open, close, findEl)
+	}
+	if open, close := bytes.Count(findEl, []byte("{")), bytes.Count(findEl, []byte("}")); open != close {
+		t.Errorf("findEl has unbalanced braces (%d open, %d close): %q", open, close, findEl)
+	}
+	if open, close := bytes.Count(findEl, []byte("[")), bytes.Count(findEl, []byte("]")); open != close {
+		t.Errorf("findEl has unbalanced brackets (%d open, %d close): %q", open, close, findEl)
+	}
+	// Semicolons are only legal inside the fallback IIFE body, never at the
+	// expression's top level. The IIFE we emit contains exactly three ';'
+	// (after `var b=document.body`, after the `if(b)b.setAttribute(...)`
+	// statement, and after `return b`). More than three means a stray
+	// top-level semicolon snuck in and would break the wrapping
+	// `var el=(<findEl>);` assignment.
+	if n := bytes.Count(findEl, []byte(";")); n > 3 {
+		t.Errorf("findEl has too many semicolons (%d) — risk of breaking `var el=(...);`: %q", n, findEl)
+	}
+}
