@@ -8,10 +8,10 @@ import (
 	"os/exec"
 	"runtime"
 
-	helpers     "github.com/felipegenef/gothicframework/pkg/helpers"
-	proxy       "github.com/felipegenef/gothicframework/pkg/helpers/proxy"
-	routes      "github.com/felipegenef/gothicframework/pkg/helpers/routes"
-	wasmhelper  "github.com/felipegenef/gothicframework/pkg/helpers/wasm"
+	helpers     "github.com/felipegenef/gothicframework/v2/pkg/helpers"
+	proxy       "github.com/felipegenef/gothicframework/v2/pkg/helpers/proxy"
+	routes      "github.com/felipegenef/gothicframework/v2/pkg/helpers/routes"
+	wasmhelper  "github.com/felipegenef/gothicframework/v2/pkg/helpers/wasm"
 )
 
 type GothicCli struct {
@@ -108,10 +108,10 @@ func (cli *GothicCli) InitializeModule(goModuleName string, frameworkVersion str
 	if err := initCmd.Run(); err != nil {
 		return fmt.Errorf("error running go mod init: %w", err)
 	}
-	// Pin the exact gothicframework pseudo-version before go mod tidy so the
-	// proxy cannot resolve a stale cached version instead.
+	// Pin the exact gothicframework version before go mod tidy so new projects
+	// use the same version as the CLI that scaffolded them.
 	if frameworkVersion != "" {
-		pinCmd := exec.Command("go", "get", "github.com/felipegenef/gothicframework@"+frameworkVersion)
+		pinCmd := exec.Command("go", "get", "github.com/felipegenef/gothicframework/v2@"+frameworkVersion)
 		pinCmd.Stdin = os.Stdin
 		pinCmd.Stderr = os.Stderr
 		if err := pinCmd.Run(); err != nil {

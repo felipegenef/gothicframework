@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/felipegenef/gothicframework/cmd"
+	"github.com/felipegenef/gothicframework/v2/cmd"
 )
 
 func main() {

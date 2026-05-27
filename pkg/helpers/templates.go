@@ -87,6 +87,32 @@ func (helper *TemplateHelper) UpdateFromTemplate(templateFilePath string, output
 	return nil
 }
 
+// UpdateFromTemplateFS renders a template stored in an embed.FS to a destination
+// file on disk. It mirrors UpdateFromTemplate but reads the template source from
+// the provided embed.FS rather than the user's project tree. This is the path
+// used for templates the CLI considers an implementation detail (WASM glue,
+// generated route registration) and no longer seeds onto user disk.
+func (helper *TemplateHelper) UpdateFromTemplateFS(fileTemplate embed.FS, templateFilePath string, outputFilePath string, templateStruct interface{}) error {
+	templateBytes, err := fs.ReadFile(fileTemplate, templateFilePath)
+	if err != nil {
+		return err
+	}
+	data := template.Must(template.New(templateFilePath).Parse(string(templateBytes)))
+	if err := os.MkdirAll(filepath.Dir(outputFilePath), 0755); err != nil {
+		return err
+	}
+	outFile, err := os.Create(outputFilePath)
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+
+	if err := data.Execute(outFile, templateStruct); err != nil {
+		return fmt.Errorf("error rendering embedded template %s to %s: %w", templateFilePath, outputFilePath, err)
+	}
+	return nil
+}
+
 func (helper *TemplateHelper) CreateFromTemplate(fileTemplate embed.FS, templateFilePath string, outputFilePath string, templateStruct interface{}) error {
 	templateBytes, err := fs.ReadFile(fileTemplate, templateFilePath)
 	if err != nil {

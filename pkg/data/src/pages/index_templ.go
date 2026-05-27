@@ -9,8 +9,8 @@ import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
 import (
-	"github.com/felipegenef/gothicframework/components"
-	routes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+	"github.com/felipegenef/gothicframework/v2/components"
+	routes "github.com/felipegenef/gothicframework/v2/pkg/helpers/routes"
 	"net/http"
 	"{{.GoModName}}/src/components"
 	"{{.GoModName}}/src/layouts"

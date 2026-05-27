@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	gothic_cli "github.com/felipegenef/gothicframework/pkg/cli"
+	gothic_cli "github.com/felipegenef/gothicframework/v2/pkg/cli"
 	"github.com/fsnotify/fsnotify"
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"

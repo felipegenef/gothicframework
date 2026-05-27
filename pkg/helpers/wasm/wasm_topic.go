@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/felipegenef/gothicframework/pkg/helpers/wasm/astx"
+	"github.com/felipegenef/gothicframework/v2/pkg/helpers/wasm/astx"
 )
 
 // Topic scanning and parsing.
@@ -20,7 +20,7 @@ import (
 // generates topic_gen.go (server-side helpers), and produces inlinable
 // user code snippets for the WASM build pipeline.
 
-const tmplTopicGen = ".gothicCli/templates/wasm/topic_gen.go"
+const tmplTopicGen = EmbeddedTmplTopicGen
 
 // resolveTopicSourceDir returns the directory to scan for topic definitions
 // and the generated-file name. Returns ("","", false) if src/topics/ does not exist.
@@ -128,11 +128,11 @@ func (h *WasmHelper) collectTopicSnippets() (snippets []string, structs []struct
 //
 // Safe to call repeatedly; a no-op when no src/topics/ dir exists.
 func (h *WasmHelper) PregenerateTopicStubs() {
-	// Ensure on-disk templates (including topic_gen.go.tmpl) match the CLI
-	// version. UpdateFromTemplate reads from disk, so the template must exist
-	// before collectTopicSnippets calls it.
-	if err := h.EnsureWasmTemplates(); err != nil {
-		fmt.Fprintf(os.Stderr, "wasm: ensure templates: %v\n", err)
+	// Templates now ship inside the CLI binary's embed.FS, so there is no
+	// on-disk seeding step. Migrate older projects by removing any stale
+	// on-disk copies that would otherwise sit around unused.
+	if err := CleanupLegacyTemplates("."); err != nil {
+		fmt.Fprintf(os.Stderr, "wasm: cleanup legacy templates: %v\n", err)
 		return
 	}
 	h.collectTopicSnippets()
@@ -162,7 +162,7 @@ func (h *WasmHelper) writeTopicKeyStubs(structs []structInfo, aliases map[string
 		MountFns:    h.buildMountFnData(structs),
 	}
 
-	_ = h.Template.UpdateFromTemplate(tmplTopicGen, outPath, data)
+	_ = h.Template.UpdateFromTemplateFS(WasmTemplateFS, tmplTopicGen, outPath, data)
 }
 
 // topicMeta carries the (keyName, compression, accessorName, componentFnName) extracted from a CreateTopic

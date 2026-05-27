@@ -1,4 +1,4 @@
-module github.com/felipegenef/gothicframework
+module github.com/felipegenef/gothicframework/v2
 
 go 1.25.0
 
@@ -13,6 +13,7 @@ require (
 	github.com/spf13/cobra v1.9.1
 	github.com/teris-io/shortid v0.0.0-20220617161101-71ec9f2aa569
 	golang.org/x/image v0.26.0
+	golang.org/x/mod v0.26.0
 	golang.org/x/net v0.54.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/tools v0.35.0
@@ -30,6 +31,5 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/mod v0.26.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 )

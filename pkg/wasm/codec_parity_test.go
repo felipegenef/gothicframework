@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	wasm "github.com/felipegenef/gothicframework/pkg/wasm"
-	"github.com/felipegenef/gothicframework/pkg/wasm/internal/parity"
+	wasm "github.com/felipegenef/gothicframework/v2/pkg/wasm"
+	"github.com/felipegenef/gothicframework/v2/pkg/wasm/internal/parity"
 )
 
 // payload describes one logical "field" written to an encoder, paired with the

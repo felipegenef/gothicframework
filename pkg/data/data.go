@@ -73,14 +73,17 @@ var DefaultCLIData = GothicCliData{
 		"public/favicon.ico":               publicFolder,
 		"public/styles.css":                publicFolder,
 	},
+	// TemplateFiles are seeded onto the user's disk at `gothic init` time so
+	// they can be customised per-project. WASM-related templates and the
+	// routes_gen generator template are NOT in this list — they ship inside
+	// the CLI binary's embed.FS as of v2.17 because they are implementation
+	// details users should not edit (and historic on-disk drift was a
+	// recurring source of silent breakage). See pkg/helpers/wasm/wasm_templates.go
+	// and pkg/helpers/routes/fileBasedRouting.go.
 	TemplateFiles: map[string]embed.FS{
-		".gothicCli/templates/Dockerfile-template":             templatesFolder,
-		".gothicCli/templates/samconfig-template.toml":         templatesFolder,
-		".gothicCli/templates/sam-template.yaml":               templatesFolder,
-		".gothicCli/templates/routes_gen.go":                   templatesFolder,
-		".gothicCli/templates/wasm/topic_gen.go":               templatesFolder,
-		".gothicCli/templates/wasm/wasm_page_main.go":          templatesFolder,
-		".gothicCli/templates/wasm/wasm_topic_manager_main.go": templatesFolder,
+		".gothicCli/templates/Dockerfile-template":     templatesFolder,
+		".gothicCli/templates/samconfig-template.toml": templatesFolder,
+		".gothicCli/templates/sam-template.yaml":       templatesFolder,
 	},
 	InitialFiles: map[string]embed.FS{
 		// route files
@@ -117,7 +120,6 @@ var DefaultCLIData = GothicCliData{
 		"public/imageExample",
 		// Cli Dirs
 		".gothicCli/templates",
-		".gothicCli/templates/wasm",
 		// Src Dirs
 		"src/api",
 		"src/components",

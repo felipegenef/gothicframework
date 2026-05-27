@@ -1,6 +1,6 @@
 package gothicwasm
 
-import . "github.com/felipegenef/gothicframework/pkg/wasm"
+import . "github.com/felipegenef/gothicframework/v2/pkg/wasm"
 
 type CounterState struct {
 	Count int

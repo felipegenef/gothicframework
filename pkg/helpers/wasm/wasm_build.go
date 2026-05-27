@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"strings"
 
-	wasmexec "github.com/felipegenef/gothicframework/pkg/data/wasm_exec"
-	wasmruntime "github.com/felipegenef/gothicframework/pkg/wasm"
+	wasmexec "github.com/felipegenef/gothicframework/v2/pkg/data/wasm_exec"
+	wasmruntime "github.com/felipegenef/gothicframework/v2/pkg/wasm"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 )
@@ -19,9 +19,12 @@ import (
 // page WASMs and topic-manager WASMs, plus the wasm_exec.js copy. Methods
 // here run on the host (not inside WASM).
 
+// Template source paths inside the embedded FS (WasmTemplateFS). The CLI no
+// longer reads these from the user's project tree — they are an implementation
+// detail of the build pipeline and ship inside the binary.
 const (
-	tmplWasmPageMain   = ".gothicCli/templates/wasm/wasm_page_main.go"
-	tmplTopicManagerMain = ".gothicCli/templates/wasm/wasm_topic_manager_main.go"
+	tmplWasmPageMain     = EmbeddedTmplWasmPageMain
+	tmplTopicManagerMain = EmbeddedTmplTopicManagerMain
 )
 
 func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
@@ -52,6 +55,9 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 
 	if err := wasmruntime.ExtractRuntime(tempModDir); err != nil {
 		return fmt.Errorf("wasm: extract runtime: %w", err)
+	}
+	if err := h.writeModuleBridge(tempModDir); err != nil {
+		return err
 	}
 
 	genDir, err := os.MkdirTemp(tempModDir, ".gen-")
@@ -87,7 +93,9 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
+	if err := runWithVendorFallback(cmd, tempModDir, func() (*exec.Cmd, error) {
+		return h.buildCommandForCompiler(page.Compiler, pkg, absOutFile, tempModDir)
+	}); err != nil {
 		return fmt.Errorf("wasm: build %s (%s): %w", page.OutputName, compilerLabel(page.Compiler), err)
 	}
 
@@ -137,7 +145,7 @@ func (h *WasmHelper) buildCommandForCompiler(choice WasmCompilerChoice, pkg, abs
 			pkg,
 		)
 		cmd.Dir = tempModDir
-		cmd.Env = os.Environ()
+		cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
 		return cmd, nil
 
 	case WasmCompilerGolang:
@@ -153,7 +161,7 @@ func (h *WasmHelper) buildCommandForCompiler(choice WasmCompilerChoice, pkg, abs
 			pkg,
 		)
 		cmd.Dir = tempModDir
-		cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm")
+		cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm", "GOWORK=off", "GOFLAGS=-mod=mod")
 		return cmd, nil
 
 	default: // WasmCompilerGothicTinyGo
@@ -170,8 +178,56 @@ func (h *WasmHelper) buildCommandForCompiler(choice WasmCompilerChoice, pkg, abs
 		)
 		cmd.Dir = tempModDir
 		cmd.Env = append(os.Environ(), h.Environ()...)
+		cmd.Env = append(cmd.Env, "GOWORK=off", "GOFLAGS=-mod=mod")
 		return cmd, nil
 	}
+}
+
+// writeModuleBridge writes a go.mod into tempModDir that links back to the
+// user's project (CWD) so imports of user-project packages in the generated
+// main.go can resolve. Called once per WASM build (per-page and topic-manager).
+func (h *WasmHelper) writeModuleBridge(tempModDir string) error {
+	const projectRoot = "."
+	modulePath, goVersion, err := ReadUserModulePath(projectRoot)
+	if err != nil {
+		return fmt.Errorf("wasm: read user module: %w", err)
+	}
+	if err := WriteBridgeGoMod(tempModDir, modulePath, projectRoot, goVersion); err != nil {
+		return fmt.Errorf("wasm: write bridge go.mod: %w", err)
+	}
+	return nil
+}
+
+// runWithVendorFallback runs cmd. If it fails, attempts `go mod vendor` inside
+// tempModDir and retries by re-creating the command via rebuild. Returns the
+// original error if the fallback also fails.
+func runWithVendorFallback(cmd *exec.Cmd, tempModDir string, rebuild func() (*exec.Cmd, error)) error {
+	origErr := cmd.Run()
+	if origErr == nil {
+		return nil
+	}
+	goExe, lookErr := exec.LookPath("go")
+	if lookErr != nil {
+		return origErr
+	}
+	vendor := exec.Command(goExe, "mod", "vendor")
+	vendor.Dir = tempModDir
+	vendor.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	vendor.Stdout = os.Stderr
+	vendor.Stderr = os.Stderr
+	if err := vendor.Run(); err != nil {
+		return origErr
+	}
+	retry, err := rebuild()
+	if err != nil {
+		return origErr
+	}
+	retry.Stdout = os.Stdout
+	retry.Stderr = os.Stderr
+	if err := retry.Run(); err != nil {
+		return origErr
+	}
+	return nil
 }
 
 func compilerLabel(c WasmCompilerChoice) string {
@@ -213,11 +269,11 @@ func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 	if err := h.EnsureBinary(); err != nil {
 		return err
 	}
-	// Refresh on-disk WASM templates from the embedded copies so projects that
-	// were initialised against an older CLI version pick up template fixes
-	// (e.g. the trailing `select {}` that keeps TinyGo's main goroutine alive)
-	// without needing to re-init.
-	if err := h.EnsureWasmTemplates(); err != nil {
+	// One-time migration: remove any pre-v2.17 on-disk template copies the
+	// project was seeded with. They are now embedded in the CLI binary and
+	// the on-disk versions would be silently ignored, so we delete them so
+	// users notice and so the path can never drift back into use.
+	if err := CleanupLegacyTemplates("."); err != nil {
 		return err
 	}
 	if len(pages) == 0 {
@@ -357,6 +413,9 @@ func (h *WasmHelper) buildTopicManager(s structInfo, snippets []string, allStruc
 	if err := wasmruntime.ExtractRuntime(tempModDir); err != nil {
 		return fmt.Errorf("wasm: extract runtime: %w", err)
 	}
+	if err := h.writeModuleBridge(tempModDir); err != nil {
+		return err
+	}
 
 	genDir, err := os.MkdirTemp(tempModDir, ".gen-")
 	if err != nil {
@@ -376,7 +435,7 @@ func (h *WasmHelper) buildTopicManager(s structInfo, snippets []string, allStruc
 	if err != nil {
 		return fmt.Errorf("wasm: manager fields: %w", err)
 	}
-	if err := h.Template.UpdateFromTemplate(tmplTopicManagerMain, mainPath, WasmTopicManagerMainData{
+	if err := h.Template.UpdateFromTemplateFS(WasmTemplateFS, tmplTopicManagerMain, mainPath, WasmTopicManagerMainData{
 		StructName:    s.Name,
 		KeyName:       s.KeyName,
 		HasTime:       h.hasTimeFields(allStructs),
@@ -398,12 +457,17 @@ func (h *WasmHelper) buildTopicManager(s structInfo, snippets []string, allStruc
 	}
 
 	pkg := "./" + filepath.Base(genDir) + "/"
-	cmd := exec.Command(tinygo, "build", "-no-debug", "-opt=z", "-o", absOutFile, "-target", "wasm", "-gc", "conservative", pkg)
-	cmd.Dir = tempModDir
-	cmd.Env = append(os.Environ(), h.Environ()...)
+	buildCmd := func() (*exec.Cmd, error) {
+		c := exec.Command(tinygo, "build", "-no-debug", "-opt=z", "-o", absOutFile, "-target", "wasm", "-gc", "conservative", pkg)
+		c.Dir = tempModDir
+		c.Env = append(os.Environ(), h.Environ()...)
+		c.Env = append(c.Env, "GOWORK=off", "GOFLAGS=-mod=mod")
+		return c, nil
+	}
+	cmd, _ := buildCmd()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := runWithVendorFallback(cmd, tempModDir, buildCmd); err != nil {
 		return fmt.Errorf("wasm: tinygo build %s: %w", wasmName, err)
 	}
 
@@ -475,7 +539,7 @@ func (h *WasmHelper) writeWasmMain(src, body string, stdImports []string, helper
 		indented.WriteString("\t" + line + "\n")
 	}
 
-	return h.Template.UpdateFromTemplate(tmplWasmPageMain, dest, WasmPageMainData{
+	return h.Template.UpdateFromTemplateFS(WasmTemplateFS, tmplWasmPageMain, dest, WasmPageMainData{
 		SourceFile:  src,
 		StdImports:  stdImports,
 		Codecs:      codecs,

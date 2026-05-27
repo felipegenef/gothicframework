@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestStdImportLines_KeepsStdDropsThirdParty(t *testing.T) {
+func TestStdImportLines_KeepsAllImports(t *testing.T) {
 	src := `package x
 
 import (
@@ -39,8 +39,11 @@ import (
 	if !strings.Contains(joined, `alias "encoding/json"`) {
 		t.Errorf("aliased std import should be kept with alias, got: %v", got)
 	}
-	if strings.Contains(joined, "github.com/foo/bar") {
-		t.Errorf("third-party should be dropped, got: %v", got)
+	// As of Phase 4 (module bridging), non-stdlib imports pass through too:
+	// the temp build module links back to the user's project via a replace
+	// directive, so third-party and user-project imports resolve normally.
+	if !strings.Contains(joined, `"github.com/foo/bar"`) {
+		t.Errorf("third-party should be kept (module bridge resolves it), got: %v", got)
 	}
 }
 

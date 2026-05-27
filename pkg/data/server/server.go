@@ -7,8 +7,8 @@ import (
 	"os"
 
 	"{{.GoModName}}/src/routes"
-	gothicComponents "github.com/felipegenef/gothicframework/components"
-	gothicRoutes "github.com/felipegenef/gothicframework/pkg/helpers/routes"
+	gothicComponents "github.com/felipegenef/gothicframework/v2/components"
+	gothicRoutes "github.com/felipegenef/gothicframework/v2/pkg/helpers/routes"
 
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"

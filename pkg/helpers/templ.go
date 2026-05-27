@@ -6,7 +6,7 @@ import (
 	"os"
 
 	templgen "github.com/a-h/templ/cmd/templ/generatecmd"
-	templcache "github.com/felipegenef/gothicframework/pkg/helpers/templ"
+	templcache "github.com/felipegenef/gothicframework/v2/pkg/helpers/templ"
 )
 
 type TemplHelper struct {
