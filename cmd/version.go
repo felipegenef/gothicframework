@@ -17,7 +17,7 @@ var CURRENT_VERSION string = "v2.16.4"
 // Update this alongside CURRENT_VERSION on every release using:
 //
 //	GOWORK=off go list -m github.com/felipegenef/gothicframework@<short-hash>
-var CURRENT_COMMIT string = "v0.0.0-20260526014444-7918e1aaa68d"
+var CURRENT_COMMIT string = "v0.0.0-20260527141254-8f8d0210b2d1"
 
 // versionCmd represents the version command
 var versionCmd = &cobra.Command{
