@@ -56,6 +56,12 @@ type WasmPage struct {
 	// WASM cache to invalidate when a transitively imported local package
 	// changes on disk. Sorted alphabetically and de-duplicated by the scanner.
 	LocalPackageDirs []string
+	// UsedDeclSources contains the formatted Go source of each AST declaration
+	// (func/const/type) that the page's ClientSideState body transitively
+	// references in its own package. Sorted alphabetically for hash stability.
+	// Used by the WASM cache to invalidate only when a referenced symbol's
+	// source actually changes, rather than any file in the package.
+	UsedDeclSources []string
 }
 
 func NewWasmHelper(goos, goarch string) WasmHelper {

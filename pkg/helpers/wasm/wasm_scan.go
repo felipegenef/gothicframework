@@ -111,6 +111,20 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 		helpers = append(helpers, src)
 	}
 
+	// Build a sorted, deterministic snapshot of the same-package decl sources
+	// for the WASM cache. Only decls that belong to the page's own package
+	// (i.e. those returned by ExtractUsedHelpers) are included — cross-package
+	// dependencies are covered separately by LocalPackageDirs hashing.
+	usedDeclSources := make([]string, 0, len(helperDecls))
+	for _, d := range helperDecls {
+		src, err := astx.FormatNode(d, h.astLoader.Fset)
+		if err != nil {
+			return WasmPage{}, false, fmt.Errorf("wasm: format used decl in %s: %w", path, err)
+		}
+		usedDeclSources = append(usedDeclSources, src)
+	}
+	sort.Strings(usedDeclSources)
+
 	// Format body (outer braces stripped by FormatNode for *ast.BlockStmt).
 	body, err := astx.FormatNode(res.Body, h.astLoader.Fset)
 	if err != nil {
@@ -162,6 +176,7 @@ func (h *WasmHelper) scanFile(path string) (WasmPage, bool, error) {
 		Compression:      compression,
 		Compiler:         compiler,
 		LocalPackageDirs: localPackageDirs,
+		UsedDeclSources:  usedDeclSources,
 	}, true, nil
 }
 

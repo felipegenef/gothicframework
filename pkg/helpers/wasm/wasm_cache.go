@@ -65,7 +65,14 @@ func (h *WasmHelper) pageInputHash(page WasmPage) string {
 	if data, err := os.ReadFile(page.SourceFile); err == nil {
 		hh.Write(data)
 	}
-	h.feedHandwrittenPackageFiles(hh, filepath.Dir(page.SourceFile), page.SourceFile)
+	// Phase 12: per-symbol hashing for the page's own package. Instead of
+	// hashing every hand-written .go file in the page's directory, hash only
+	// the formatted source of the AST decls the page's ClientSideState body
+	// actually references. UsedDeclSources is pre-sorted by the scanner.
+	for _, src := range page.UsedDeclSources {
+		io.WriteString(hh, src)
+		io.WriteString(hh, "\x00")
+	}
 	// Hash hand-written files in every local package contributing helpers to
 	// this page, so changes in cross-package dependencies invalidate the cache.
 	// page.LocalPackageDirs is pre-sorted by the scanner for determinism.
