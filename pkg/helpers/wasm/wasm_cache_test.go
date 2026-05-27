@@ -338,3 +338,115 @@ func TestFeedHandwrittenPackageFiles_OrderingDeterministic(t *testing.T) {
 		t.Errorf("expected identical hashes regardless of write order; got %q vs %q", h1, h2)
 	}
 }
+
+// Phase 12 — Per-symbol cache hashing tests. These exercise the
+// UsedDeclSources path in pageInputHash directly by constructing WasmPage
+// values with pre-populated decl sources, bypassing the scanner.
+
+// TestPageInputHash_UsedDeclSources_ValueChangeInvalidates ensures that
+// changing the source of a tracked decl (e.g. const value) flips the hash.
+func TestPageInputHash_UsedDeclSources_ValueChangeInvalidates(t *testing.T) {
+	dir := withTempCwd(t)
+	srcPath := filepath.Join(dir, "page.go")
+	if err := os.WriteFile(srcPath, []byte("package x\n"), 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	h := DefaultWasmHelper()
+	pageBefore := WasmPage{
+		SourceFile:      srcPath,
+		Compression:     WasmCompressionGzip,
+		UsedDeclSources: []string{"const CounterStep = 5"},
+	}
+	pageAfter := WasmPage{
+		SourceFile:      srcPath,
+		Compression:     WasmCompressionGzip,
+		UsedDeclSources: []string{"const CounterStep = 6"},
+	}
+	before := h.pageInputHash(pageBefore)
+	after := h.pageInputHash(pageAfter)
+	if before == after {
+		t.Errorf("expected hash to change when a tracked decl source changes; both were %q", before)
+	}
+}
+
+// TestPageInputHash_UsedDeclSources_UnrelatedSymbolsIgnored ensures that
+// symbols which aren't in UsedDeclSources do NOT affect the hash. This is the
+// whole point of per-symbol hashing — sibling decls the page doesn't use are
+// transparent to the cache.
+func TestPageInputHash_UsedDeclSources_UnrelatedSymbolsIgnored(t *testing.T) {
+	dir := withTempCwd(t)
+	srcPath := filepath.Join(dir, "page.go")
+	if err := os.WriteFile(srcPath, []byte("package x\n"), 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	h := DefaultWasmHelper()
+	page := WasmPage{
+		SourceFile:      srcPath,
+		Compression:     WasmCompressionGzip,
+		UsedDeclSources: []string{"const CounterStep = 5"},
+	}
+	// Writing an unrelated state.go to the same dir must NOT change the hash
+	// now that pageInputHash no longer hashes the whole package directory.
+	before := h.pageInputHash(page)
+	statePath := filepath.Join(dir, "state.go")
+	if err := os.WriteFile(statePath, []byte("package x\nconst Unrelated = 42\n"), 0644); err != nil {
+		t.Fatalf("write state.go: %v", err)
+	}
+	after := h.pageInputHash(page)
+	if before != after {
+		t.Errorf("expected hash unchanged when unrelated sibling decl appears; got %q vs %q", before, after)
+	}
+}
+
+// TestPageInputHash_UsedDeclSources_HelperBodyChangeInvalidates ensures that
+// a func helper's body change (different formatted source) flips the hash.
+func TestPageInputHash_UsedDeclSources_HelperBodyChangeInvalidates(t *testing.T) {
+	dir := withTempCwd(t)
+	srcPath := filepath.Join(dir, "page.go")
+	if err := os.WriteFile(srcPath, []byte("package x\n"), 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	h := DefaultWasmHelper()
+	pageBefore := WasmPage{
+		SourceFile:      srcPath,
+		Compression:     WasmCompressionGzip,
+		UsedDeclSources: []string{"func Foo() int { return 1 }"},
+	}
+	pageAfter := WasmPage{
+		SourceFile:      srcPath,
+		Compression:     WasmCompressionGzip,
+		UsedDeclSources: []string{"func Foo() int { return 2 }"},
+	}
+	before := h.pageInputHash(pageBefore)
+	after := h.pageInputHash(pageAfter)
+	if before == after {
+		t.Errorf("expected hash to change when helper body changes; both were %q", before)
+	}
+}
+
+// TestPageInputHash_UsedDeclSources_Deterministic ensures that repeated hash
+// calls over the same WasmPage yield identical results — sort stability and
+// hashing should be deterministic.
+func TestPageInputHash_UsedDeclSources_Deterministic(t *testing.T) {
+	dir := withTempCwd(t)
+	srcPath := filepath.Join(dir, "page.go")
+	if err := os.WriteFile(srcPath, []byte("package x\n"), 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	h := DefaultWasmHelper()
+	page := WasmPage{
+		SourceFile:  srcPath,
+		Compression: WasmCompressionGzip,
+		UsedDeclSources: []string{
+			"const A = 1",
+			"const B = 2",
+			"func F() int { return 3 }",
+		},
+	}
+	h1 := h.pageInputHash(page)
+	h2 := h.pageInputHash(page)
+	h3 := h.pageInputHash(page)
+	if h1 != h2 || h2 != h3 {
+		t.Errorf("expected deterministic hash across calls; got %q %q %q", h1, h2, h3)
+	}
+}
