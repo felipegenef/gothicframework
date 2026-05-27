@@ -62,7 +62,12 @@ func injectWasmBootstrap(html []byte, wasmName string, compression CompressionMe
 	// consistency. For fragments we use the instance id to look up the wrapper.
 	var findEl string
 	if isFullPage {
-		findEl = `document.querySelector('body[data-gothic-wasm="` + wasmName + `"]')`
+		// After hx-boost navigation, HTMX swaps body innerHTML but not body element
+		// attributes — so body still carries the previous page's data-gothic-wasm.
+		// Fall back to document.body and update its attribute so the scope stamp
+		// and WASM bootstrap work correctly on every navigation.
+		findEl = `(document.querySelector('body[data-gothic-wasm="` + wasmName + `"]')||` +
+			`(function(){var b=document.body;if(b)b.setAttribute('data-gothic-wasm','` + wasmName + `');return b;})())`
 	} else {
 		findEl = `(document.currentScript&&document.currentScript.previousElementSibling)` +
 			`||document.querySelector('[data-gothic-wasm="` + wasmName + `"][data-gothic-inst="` + inst + `"]')`

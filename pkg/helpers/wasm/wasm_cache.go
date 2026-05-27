@@ -65,12 +65,63 @@ func (h *WasmHelper) pageInputHash(page WasmPage) string {
 	if data, err := os.ReadFile(page.SourceFile); err == nil {
 		hh.Write(data)
 	}
+	h.feedHandwrittenPackageFiles(hh, filepath.Dir(page.SourceFile), page.SourceFile)
 	h.feedTopicFiles(hh)
 	h.feedFile(hh, tmplWasmPageMain)
 	h.feedRuntimeFS(hh)
 	hh.Write([]byte{byte(page.Compression)})
 	hh.Write([]byte{byte(page.Compiler)})
 	return hex.EncodeToString(hh.Sum(nil))
+}
+
+// feedHandwrittenPackageFiles hashes hand-written .go files in the page's
+// package directory so changes to sibling files (e.g. state.go) invalidate the
+// per-page WASM cache. Generated files (*_templ.go, *_gen.go), test files
+// (*_test.go), and the page's own SourceFile (exclude) are skipped. Files are
+// processed in alphabetical order for determinism.
+func (h *WasmHelper) feedHandwrittenPackageFiles(hh io.Writer, dir string, exclude string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	absExclude, err := filepath.Abs(exclude)
+	if err != nil {
+		absExclude = exclude
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		if strings.HasSuffix(name, "_templ.go") ||
+			strings.HasSuffix(name, "_gen.go") ||
+			strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		absFull, err := filepath.Abs(full)
+		if err != nil {
+			absFull = full
+		}
+		if absFull == absExclude {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		hh.Write([]byte(name))
+		hh.Write([]byte{0})
+		hh.Write(data)
+	}
 }
 
 // topicManagerInputHash hashes all topic files, the manager template, and the compression method.
