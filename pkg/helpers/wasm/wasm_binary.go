@@ -9,10 +9,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Binary lifecycle: TinyGo toolchain download, install, verification, and
@@ -20,6 +23,7 @@ import (
 // WASM).
 
 var ensureBinaryMu sync.Mutex
+var ensureBinaryenMu sync.Mutex
 
 const (
 	wasmMaxRetries      = 3
@@ -42,6 +46,22 @@ func (h *WasmHelper) binaryName() (string, error) {
 	return name, nil
 }
 
+func (h *WasmHelper) binaryenBinaryName() (string, error) {
+	key := h.Runtime + "/" + h.Arch
+	names := map[string]string{
+		"linux/amd64":   fmt.Sprintf("binaryen-version_%s-x86_64-linux.tar.gz", h.BinaryenVersion),
+		"linux/arm64":   fmt.Sprintf("binaryen-version_%s-aarch64-linux.tar.gz", h.BinaryenVersion),
+		"darwin/amd64":  fmt.Sprintf("binaryen-version_%s-x86_64-macos.tar.gz", h.BinaryenVersion),
+		"darwin/arm64":  fmt.Sprintf("binaryen-version_%s-arm64-macos.tar.gz", h.BinaryenVersion),
+		"windows/amd64": fmt.Sprintf("binaryen-version_%s-x86_64-windows.tar.gz", h.BinaryenVersion),
+	}
+	name, ok := names[key]
+	if !ok {
+		return "", fmt.Errorf("unsupported platform %s/%s for Binaryen", h.Runtime, h.Arch)
+	}
+	return name, nil
+}
+
 func (h *WasmHelper) cacheDir() (string, error) {
 	base := os.Getenv("GOTHIC_CLI_CACHE_DIR")
 	if base == "" {
@@ -52,6 +72,27 @@ func (h *WasmHelper) cacheDir() (string, error) {
 		}
 	}
 	return filepath.Join(base, "gothic-cli", "tinygo"), nil
+}
+
+func (h *WasmHelper) BinaryenRoot() string {
+	dir, err := h.cacheDir()
+	if err != nil {
+		return ""
+	}
+	platform := h.Runtime + "-" + h.Arch
+	return filepath.Join(dir, "binaryen-"+h.BinaryenVersion, platform, "binaryen-version_"+h.BinaryenVersion)
+}
+
+func (h *WasmHelper) BinaryenBinary() string {
+	root := h.BinaryenRoot()
+	if root == "" {
+		return ""
+	}
+	name := "wasm-opt"
+	if h.Runtime == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(root, "bin", name)
 }
 
 func (h *WasmHelper) TinyGoRoot() string {
@@ -72,12 +113,114 @@ func (h *WasmHelper) TinyGoBinary() string {
 }
 
 func (h *WasmHelper) Environ() []string {
+	return h.EnvironWithWarn(nil)
+}
+
+func (h *WasmHelper) EnvironWithWarn(warnOnce *sync.Once) []string {
 	root := h.TinyGoRoot()
 	binDir := filepath.Join(root, "bin")
-	return []string{
+
+	binaryenBinDir := filepath.Join(h.BinaryenRoot(), "bin")
+
+	env := []string{
 		"TINYGOROOT=" + root,
-		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"PATH=" + binDir + string(os.PathListSeparator) + binaryenBinDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 	}
+
+	// TinyGo 0.41.1 requires wasm-opt for -opt=s/z. If it's missing from both
+	// the system PATH and the managed tinygo/bin dir, and we haven't managed
+	// to download our own binaryen either, we set WASMOPT=false.
+	hasWasmOpt := false
+	if _, err := exec.LookPath("wasm-opt"); err == nil {
+		hasWasmOpt = true
+	} else if _, err := os.Stat(filepath.Join(binDir, "wasm-opt")); err == nil {
+		hasWasmOpt = true
+	} else if _, err := os.Stat(filepath.Join(binDir, "wasm-opt.exe")); err == nil {
+		hasWasmOpt = true
+	} else if _, err := os.Stat(h.BinaryenBinary()); err == nil {
+		hasWasmOpt = true
+	}
+
+	if !hasWasmOpt {
+		env = append(env, "WASMOPT=false")
+		if warnOnce != nil {
+			warnOnce.Do(func() {
+				wasmWarnf("wasm-opt not found; skipping optimization (WASMOPT=false). Install Binaryen for smaller binaries.")
+			})
+		}
+	}
+
+	return env
+}
+
+func (h *WasmHelper) EnsureBinaryen() error {
+	// If wasm-opt is already in PATH, we don't need to download it.
+	if _, err := exec.LookPath("wasm-opt"); err == nil {
+		return nil
+	}
+
+	if b := h.BinaryenBinary(); b != "" {
+		if _, err := os.Stat(b); err == nil {
+			return nil
+		}
+	}
+
+	ensureBinaryenMu.Lock()
+	defer ensureBinaryenMu.Unlock()
+
+	if b := h.BinaryenBinary(); b != "" {
+		if _, err := os.Stat(b); err == nil {
+			return nil
+		}
+	}
+
+	archiveName, err := h.binaryenBinaryName()
+	if err != nil {
+		return err
+	}
+
+	archiveURL := fmt.Sprintf(
+		"https://github.com/WebAssembly/binaryen/releases/download/version_%s/%s",
+		h.BinaryenVersion, archiveName,
+	)
+
+	fmt.Fprintf(os.Stderr, "wasm: wasm-opt not found — downloading Binaryen %s for %s/%s...\n",
+		h.BinaryenVersion, h.Runtime, h.Arch)
+
+	tmpArchive, err := h.downloadToTemp(archiveURL)
+	if err != nil {
+		return fmt.Errorf("wasm: download Binaryen: %w", err)
+	}
+	defer os.Remove(tmpArchive)
+
+	dir, err := h.cacheDir()
+	if err != nil {
+		return err
+	}
+
+	platform := h.Runtime + "-" + h.Arch
+	finalDir := filepath.Join(dir, "binaryen-"+h.BinaryenVersion, platform)
+	tmpDir := finalDir + ".tmp"
+
+	os.RemoveAll(tmpDir)
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return fmt.Errorf("wasm: mkdir: %w", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "wasm: extracting Binaryen toolchain...")
+	if err := h.extractArchive(tmpArchive, tmpDir); err != nil {
+		os.RemoveAll(tmpDir)
+		return fmt.Errorf("wasm: extract: %w", err)
+	}
+
+	os.RemoveAll(finalDir)
+	if err := os.Rename(tmpDir, finalDir); err != nil {
+		os.RemoveAll(tmpDir)
+		return fmt.Errorf("wasm: install: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "wasm: Binaryen %s ready at %s\n", h.BinaryenVersion, h.BinaryenRoot())
+	return nil
 }
 
 func (h *WasmHelper) EnsureBinary() error {
@@ -88,10 +231,42 @@ func (h *WasmHelper) EnsureBinary() error {
 		return nil
 	}
 
-	if _, err := os.Stat(h.TinyGoBinary()); err == nil {
+	tinygoReady := func() bool {
+		_, err := os.Stat(h.TinyGoBinary())
+		return err == nil
+	}
+	binaryenReady := func() bool {
+		if _, err := exec.LookPath("wasm-opt"); err == nil {
+			return true
+		}
+		if b := h.BinaryenBinary(); b != "" {
+			if _, err := os.Stat(b); err == nil {
+				return true
+			}
+		}
+		return false
+	}
+
+	if tinygoReady() && binaryenReady() {
 		return nil
 	}
 
+	var g errgroup.Group
+	if !binaryenReady() {
+		g.Go(func() error {
+			if err := h.EnsureBinaryen(); err != nil {
+				fmt.Fprintf(os.Stderr, "wasm: WARNING — failed to ensure Binaryen (%v); build might be unoptimized\n", err)
+			}
+			return nil
+		})
+	}
+	if !tinygoReady() {
+		g.Go(h.ensureTinyGo)
+	}
+	return g.Wait()
+}
+
+func (h *WasmHelper) ensureTinyGo() error {
 	ensureBinaryMu.Lock()
 	defer ensureBinaryMu.Unlock()
 

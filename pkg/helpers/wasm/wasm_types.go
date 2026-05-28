@@ -120,6 +120,7 @@ type structInfo struct {
 	Name            string
 	KeyName         string
 	Compression     WasmCompression
+	Compiler        WasmCompilerChoice
 	Fields          []fieldInfo
 	AccessorName    string // var name from "var X = CreateTopic(...)", falls back to struct-derived name
 	ComponentFnName string // overrides Add<StructName>Topic mount helper name

@@ -79,7 +79,7 @@ func (h *WasmHelper) pageInputHash(page WasmPage) string {
 	for _, dir := range page.LocalPackageDirs {
 		h.feedHandwrittenPackageFiles(hh, dir, "")
 	}
-	h.feedTopicFiles(hh)
+
 	h.feedEmbeddedTemplate(hh, tmplWasmPageMain)
 	h.feedRuntimeFS(hh)
 	hh.Write([]byte{byte(page.Compression)})
@@ -137,13 +137,18 @@ func (h *WasmHelper) feedHandwrittenPackageFiles(hh io.Writer, dir string, exclu
 	}
 }
 
-// topicManagerInputHash hashes all topic files, the manager template, and the compression method.
-func (h *WasmHelper) topicManagerInputHash(compression WasmCompression) string {
+// topicManagerInputHash hashes the topic's source directory, the manager template,
+// and the specific configuration (name, compression, compiler).
+func (h *WasmHelper) topicManagerInputHash(s structInfo) string {
 	hh := sha256.New()
-	h.feedTopicFiles(hh)
+	if sourceDir, _, ok := resolveTopicSourceDir(); ok {
+		h.feedHandwrittenPackageFiles(hh, sourceDir, "")
+	}
 	h.feedEmbeddedTemplate(hh, tmplTopicManagerMain)
 	h.feedRuntimeFS(hh)
-	hh.Write([]byte{byte(compression)})
+	hh.Write([]byte(s.Name))
+	hh.Write([]byte{byte(s.Compression)})
+	hh.Write([]byte{byte(s.Compiler)})
 	return hex.EncodeToString(hh.Sum(nil))
 }
 

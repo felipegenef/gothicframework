@@ -36,6 +36,10 @@ func wasmErrorf(format string, args ...any) {
 	fmt.Printf(wasmTimestamp()+" "+wasmTag+" "+ansiRed+format+ansiReset+"\n", args...)
 }
 
+func wasmWarnf(format string, args ...any) {
+	fmt.Printf(wasmTimestamp()+" "+wasmTag+" "+ansiYellow+format+ansiReset+"\n", args...)
+}
+
 // wasmBuildResult prints the coloured build-result line:
 //
 //	2006/01/02 15:04:05 WASM <name> → <rawSize> → <finalSize> (<compression>)
