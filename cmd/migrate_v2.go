@@ -246,10 +246,11 @@ func rewriteGoMod(path string, content []byte, dryRun bool) (bool, error) {
 	for _, r := range mf.Require {
 		if r.Mod.Path == oldModulePath {
 			// /v2 modules require a v2.x.x version per SemVer import compatibility.
-			// We seed with v2.0.0; `go mod tidy` will resolve to the actual latest.
+			// Seed with the current CLI version so `go mod tidy` starts from a
+			// version that is guaranteed to exist on the registry.
 			newVersion := r.Mod.Version
 			if !strings.HasPrefix(newVersion, "v2.") {
-				newVersion = "v2.0.0"
+				newVersion = CURRENT_VERSION
 			}
 			if err := mf.AddRequire(newModulePath, newVersion); err != nil {
 				return false, err
