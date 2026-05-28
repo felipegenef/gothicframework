@@ -1,5 +1,8 @@
 <img alt="background doc" src="Doc/Assets/gothic-hero.png" width="100%"/>
 
+[![CI](https://github.com/felipegenef/gothicframework/actions/workflows/ci.yml/badge.svg)](https://github.com/felipegenef/gothicframework/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/felipegenef/gothicframework/branch/main/graph/badge.svg)](https://codecov.io/gh/felipegenef/gothicframework)
+
 <!-- <p align="center">
   <img alt="logo" src="Doc/Assets/gothic-g-no-bg.png" width="100"/>
 </p>
