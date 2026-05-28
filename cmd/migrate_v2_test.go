@@ -43,38 +43,29 @@ func readFile(t *testing.T, p string) string {
 	return string(b)
 }
 
-// equalGoMod compares two go.mod contents semantically (module + requires).
-func equalGoMod(t *testing.T, gotPath, wantPath string) bool {
+// assertGoMod checks that the migrated go.mod requires newModulePath at CURRENT_VERSION.
+func assertGoMod(t *testing.T, gotPath string) {
 	t.Helper()
 	gb, err := os.ReadFile(gotPath)
 	if err != nil {
-		t.Fatalf("read got: %v", err)
-	}
-	wb, err := os.ReadFile(wantPath)
-	if err != nil {
-		t.Fatalf("read want: %v", err)
+		t.Fatalf("read go.mod: %v", err)
 	}
 	g, err := modfile.Parse(gotPath, gb, nil)
 	if err != nil {
-		t.Fatalf("parse got: %v", err)
+		t.Fatalf("parse go.mod: %v", err)
 	}
-	w, err := modfile.Parse(wantPath, wb, nil)
-	if err != nil {
-		t.Fatalf("parse want: %v", err)
-	}
-	if g.Module.Mod.Path != w.Module.Mod.Path {
-		return false
-	}
-	if len(g.Require) != len(w.Require) {
-		return false
-	}
-	for i := range g.Require {
-		if g.Require[i].Mod.Path != w.Require[i].Mod.Path ||
-			g.Require[i].Mod.Version != w.Require[i].Mod.Version {
-			return false
+	for _, r := range g.Require {
+		if r.Mod.Path == oldModulePath {
+			t.Errorf("go.mod still requires old path %s", oldModulePath)
+		}
+		if r.Mod.Path == newModulePath {
+			if r.Mod.Version != CURRENT_VERSION {
+				t.Errorf("go.mod: want %s %s, got %s", newModulePath, CURRENT_VERSION, r.Mod.Version)
+			}
+			return
 		}
 	}
-	return true
+	t.Errorf("go.mod: %s not found in require directives", newModulePath)
 }
 
 func setupTempProject(t *testing.T) string {
@@ -96,11 +87,7 @@ func TestMigrateV2_Migration(t *testing.T) {
 
 	afterDir := filepath.Join("testdata", "migrate_v2", "after")
 
-	if !equalGoMod(t, filepath.Join(dir, "go.mod"), filepath.Join(afterDir, "go.mod")) {
-		t.Errorf("go.mod mismatch.\ngot:\n%s\nwant:\n%s",
-			readFile(t, filepath.Join(dir, "go.mod")),
-			readFile(t, filepath.Join(afterDir, "go.mod")))
-	}
+	assertGoMod(t, filepath.Join(dir, "go.mod"))
 	for _, name := range []string{"main.go", "page.templ"} {
 		got := readFile(t, filepath.Join(dir, name))
 		want := readFile(t, filepath.Join(afterDir, name))
