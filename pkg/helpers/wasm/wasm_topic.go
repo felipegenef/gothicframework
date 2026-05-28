@@ -170,6 +170,7 @@ func (h *WasmHelper) writeTopicKeyStubs(structs []structInfo, aliases map[string
 type topicMeta struct {
 	KeyName         string
 	Compression     WasmCompression
+	Compiler        WasmCompilerChoice
 	AccessorName    string // the variable name from "var X = CreateTopic(...)"
 	ComponentFnName string // overrides Add<StructName>Topic mount helper name
 }
@@ -236,6 +237,7 @@ func (h *WasmHelper) parseStructsFromSource(src string) (structs []structInfo, t
 				if meta, ok := topicMetas[si.Name]; ok {
 					si.KeyName = meta.KeyName
 					si.Compression = meta.Compression
+					si.Compiler = meta.Compiler
 					si.AccessorName = meta.AccessorName
 					si.ComponentFnName = meta.ComponentFnName
 				}
@@ -363,7 +365,7 @@ func collectCreateTopicMetas(f *ast.File) map[string]topicMeta {
 				if structName == "" {
 					continue
 				}
-				name, compression, subscriberFnName, componentFnName := parseTopicConfigArg(call.Args[1])
+				name, compression, compiler, subscriberFnName, componentFnName := parseTopicConfigArg(call.Args[1])
 				// Capture the var name (e.g. "PageTopic" from "var PageTopic = CreateTopic(...)").
 				// If the var is blank ("_") or missing, fall back to struct-derived name.
 				// No warning — blank identifier on disk is the CLI's own normalized form
@@ -378,7 +380,7 @@ func collectCreateTopicMetas(f *ast.File) map[string]topicMeta {
 				if subscriberFnName != "" {
 					accessorName = subscriberFnName
 				}
-				metas[structName] = topicMeta{KeyName: name, Compression: compression, AccessorName: accessorName, ComponentFnName: componentFnName}
+				metas[structName] = topicMeta{KeyName: name, Compression: compression, Compiler: compiler, AccessorName: accessorName, ComponentFnName: componentFnName}
 			}
 		}
 		return true
@@ -452,11 +454,12 @@ func parseCompressionExpr(expr ast.Expr) WasmCompression {
 	return WasmCompressionGzip
 }
 
-// parseTopicConfigArg pulls Name, Compression, SubscriberFnName, and ComponentFnName
+// parseTopicConfigArg pulls Name, Compression, Compiler, SubscriberFnName, and ComponentFnName
 // from a TopicConfig composite literal. Compression defaults to GZIP; "BROTLI"
 // (case-insensitive) → brotli.
-func parseTopicConfigArg(arg ast.Expr) (name string, compression WasmCompression, subscriberFnName string, componentFnName string) {
+func parseTopicConfigArg(arg ast.Expr) (name string, compression WasmCompression, compiler WasmCompilerChoice, subscriberFnName string, componentFnName string) {
 	compression = WasmCompressionGzip
+	compiler = WasmCompilerGothicTinyGo
 	cl, ok := arg.(*ast.CompositeLit)
 	if !ok {
 		return
@@ -479,6 +482,8 @@ func parseTopicConfigArg(arg ast.Expr) (name string, compression WasmCompression
 			}
 		case "Compression":
 			compression = parseCompressionExpr(kv.Value)
+		case "Compiler":
+			compiler = parseCompilerExpr(kv.Value)
 		case "SubscriberFnName":
 			if bl, ok := kv.Value.(*ast.BasicLit); ok && bl.Kind == token.STRING {
 				if unq, err := strconv.Unquote(bl.Value); err == nil {
@@ -494,6 +499,25 @@ func parseTopicConfigArg(arg ast.Expr) (name string, compression WasmCompression
 		}
 	}
 	return
+}
+
+func parseCompilerExpr(expr ast.Expr) WasmCompilerChoice {
+	var identName string
+	switch e := expr.(type) {
+	case *ast.Ident:
+		identName = e.Name
+	case *ast.SelectorExpr:
+		if e.Sel != nil {
+			identName = e.Sel.Name
+		}
+	}
+	switch identName {
+	case "LocalTinyGo":
+		return WasmCompilerLocalTinyGo
+	case "Golang":
+		return WasmCompilerGolang
+	}
+	return WasmCompilerGothicTinyGo
 }
 
 // normalizeTopicDeclarations rewrites every `var <AccessorName> = CreateTopic(`

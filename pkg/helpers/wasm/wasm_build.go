@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	wasmexec "github.com/felipegenef/gothicframework/v2/pkg/data/wasm_exec"
 	wasmruntime "github.com/felipegenef/gothicframework/v2/pkg/wasm"
@@ -27,7 +28,7 @@ const (
 	tmplTopicManagerMain = EmbeddedTmplTopicManagerMain
 )
 
-func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
+func (h *WasmHelper) GeneratePage(page WasmPage, outDir string, warnOnce *sync.Once) error {
 	compressedExt := compressionExt(page.Compression)
 	var hash string
 	if h.cache != nil {
@@ -86,7 +87,7 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	}
 
 	pkg := "./" + filepath.Base(genDir) + "/"
-	cmd, err := h.buildCommandForCompiler(page.Compiler, pkg, absOutFile, tempModDir)
+	cmd, err := h.buildCommandForCompiler(page.Compiler, pkg, absOutFile, tempModDir, warnOnce)
 	if err != nil {
 		return err
 	}
@@ -94,20 +95,36 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 	cmd.Stderr = os.Stderr
 
 	if err := runWithVendorFallback(cmd, tempModDir, func() (*exec.Cmd, error) {
-		return h.buildCommandForCompiler(page.Compiler, pkg, absOutFile, tempModDir)
+		return h.buildCommandForCompiler(page.Compiler, pkg, absOutFile, tempModDir, warnOnce)
 	}); err != nil {
 		return fmt.Errorf("wasm: build %s (%s): %w", page.OutputName, compilerLabel(page.Compiler), err)
 	}
 
 	wasmSize, _ := h.fileSize(absOutFile)
 
-	if _, err := exec.LookPath("wasm-opt"); err == nil {
+	wasmOpt := "wasm-opt"
+	if _, err := exec.LookPath(wasmOpt); err != nil {
+		wasmOpt = ""
+		if managed := h.BinaryenBinary(); managed != "" {
+			if _, err := os.Stat(managed); err == nil {
+				wasmOpt = managed
+			}
+		}
+	}
+
+	if wasmOpt != "" {
 		tmp := absOutFile + ".opt"
-		opt := exec.Command("wasm-opt", "-Oz", "--strip-debug", "-o", tmp, absOutFile)
+		opt := exec.Command(wasmOpt, "-Oz", "--strip-debug", "-o", tmp, absOutFile)
 		if err := opt.Run(); err == nil {
 			os.Rename(tmp, absOutFile)
 		} else {
 			os.Remove(tmp)
+		}
+	} else {
+		if warnOnce != nil {
+			warnOnce.Do(func() {
+				wasmWarnf("wasm-opt not found; skipping manual optimization pass. Install Binaryen for smaller binaries.")
+			})
 		}
 	}
 
@@ -130,7 +147,7 @@ func (h *WasmHelper) GeneratePage(page WasmPage, outDir string) error {
 // go.mod with module name "wasm-runtime") and pkg is the relative import path
 // ("./<genDir>/"). The runtime files use `//go:build js && wasm`, so both
 // TinyGo's -target=wasm and standard Go's GOOS=js GOARCH=wasm satisfy them.
-func (h *WasmHelper) buildCommandForCompiler(choice WasmCompilerChoice, pkg, absOutFile, tempModDir string) (*exec.Cmd, error) {
+func (h *WasmHelper) buildCommandForCompiler(choice WasmCompilerChoice, pkg, absOutFile, tempModDir string, warnOnce *sync.Once) (*exec.Cmd, error) {
 	switch choice {
 	case WasmCompilerLocalTinyGo:
 		tinygo, err := exec.LookPath("tinygo")
@@ -146,6 +163,18 @@ func (h *WasmHelper) buildCommandForCompiler(choice WasmCompilerChoice, pkg, abs
 		)
 		cmd.Dir = tempModDir
 		cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+		hasWasmOpt := false
+		if _, err := exec.LookPath("wasm-opt"); err == nil {
+			hasWasmOpt = true
+		} else if b := h.BinaryenBinary(); b != "" {
+			if _, err := os.Stat(b); err == nil {
+				hasWasmOpt = true
+				cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(b)+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
+		}
+		if !hasWasmOpt {
+			cmd.Env = append(cmd.Env, "WASMOPT=false")
+		}
 		return cmd, nil
 
 	case WasmCompilerGolang:
@@ -177,7 +206,7 @@ func (h *WasmHelper) buildCommandForCompiler(choice WasmCompilerChoice, pkg, abs
 			pkg,
 		)
 		cmd.Dir = tempModDir
-		cmd.Env = append(os.Environ(), h.Environ()...)
+		cmd.Env = append(os.Environ(), h.EnvironWithWarn(warnOnce)...)
 		cmd.Env = append(cmd.Env, "GOWORK=off", "GOFLAGS=-mod=mod")
 		return cmd, nil
 	}
@@ -286,7 +315,9 @@ func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 
 	h.cache = loadWasmCache()
 
-	if err := h.GenerateTopicManagers(outDir); err != nil {
+	warnOnce := &sync.Once{}
+
+	if err := h.GenerateTopicManagers(outDir, warnOnce); err != nil {
 		wasmErrorf("topic manager build failed: %v", err)
 	}
 
@@ -299,7 +330,7 @@ func (h *WasmHelper) GenerateAll(pages []WasmPage, outDir string) error {
 				return err
 			}
 			defer sem.Release(1)
-			return h.GeneratePage(page, outDir)
+			return h.GeneratePage(page, outDir, warnOnce)
 		})
 	}
 	if err := g.Wait(); err != nil {
@@ -363,7 +394,7 @@ func (h *WasmHelper) CopyWasmExec(destDir string) error {
 	return os.WriteFile(dst, wasmexec.Shim, 0644)
 }
 
-func (h *WasmHelper) GenerateTopicManagers(outDir string) error {
+func (h *WasmHelper) GenerateTopicManagers(outDir string, warnOnce *sync.Once) error {
 	snippets, structs, aliases, refAliases := h.collectTopicSnippets()
 	if !h.hasTopicStructs(structs) {
 		return nil
@@ -376,19 +407,19 @@ func (h *WasmHelper) GenerateTopicManagers(outDir string) error {
 		if s.KeyName == "" {
 			continue
 		}
-		if err := h.buildTopicManager(s, snippets, structs, aliases, refAliases, outDir); err != nil {
+		if err := h.buildTopicManager(s, snippets, structs, aliases, refAliases, outDir, warnOnce); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (h *WasmHelper) buildTopicManager(s structInfo, snippets []string, allStructs []structInfo, aliases map[string]string, refAliases map[string]typeRef, outDir string) error {
+func (h *WasmHelper) buildTopicManager(s structInfo, snippets []string, allStructs []structInfo, aliases map[string]string, refAliases map[string]typeRef, outDir string, warnOnce *sync.Once) error {
 	wasmName := "topic-" + s.KeyName
 	compression := s.Compression
 	var hash string
 	if h.cache != nil {
-		hash = h.topicManagerInputHash(compression)
+		hash = h.topicManagerInputHash(s)
 		outPath := filepath.Join(outDir, wasmName+".wasm"+compressionExt(compression))
 		if h.cache.upToDate(wasmName, hash) {
 			if _, err := os.Stat(outPath); err == nil {
@@ -451,34 +482,43 @@ func (h *WasmHelper) buildTopicManager(s structInfo, snippets []string, allStruc
 		return err
 	}
 
-	tinygo := h.TinyGoBinary()
-	if h.ConfigOverride != "" {
-		tinygo = h.ConfigOverride
-	}
-
 	pkg := "./" + filepath.Base(genDir) + "/"
-	buildCmd := func() (*exec.Cmd, error) {
-		c := exec.Command(tinygo, "build", "-no-debug", "-opt=z", "-o", absOutFile, "-target", "wasm", "-gc", "conservative", pkg)
-		c.Dir = tempModDir
-		c.Env = append(os.Environ(), h.Environ()...)
-		c.Env = append(c.Env, "GOWORK=off", "GOFLAGS=-mod=mod")
-		return c, nil
+	cmd, err := h.buildCommandForCompiler(s.Compiler, pkg, absOutFile, tempModDir, warnOnce)
+	if err != nil {
+		return err
 	}
-	cmd, _ := buildCmd()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := runWithVendorFallback(cmd, tempModDir, buildCmd); err != nil {
-		return fmt.Errorf("wasm: tinygo build %s: %w", wasmName, err)
+	if err := runWithVendorFallback(cmd, tempModDir, func() (*exec.Cmd, error) {
+		return h.buildCommandForCompiler(s.Compiler, pkg, absOutFile, tempModDir, warnOnce)
+	}); err != nil {
+		return fmt.Errorf("wasm: tinygo build %s (%s): %w", wasmName, compilerLabel(s.Compiler), err)
 	}
 
 	wasmSize, _ := h.fileSize(absOutFile)
 
-	if _, err := exec.LookPath("wasm-opt"); err == nil {
+	wasmOpt := "wasm-opt"
+	if _, err := exec.LookPath(wasmOpt); err != nil {
+		wasmOpt = ""
+		if managed := h.BinaryenBinary(); managed != "" {
+			if _, err := os.Stat(managed); err == nil {
+				wasmOpt = managed
+			}
+		}
+	}
+
+	if wasmOpt != "" {
 		tmp := absOutFile + ".opt"
-		if opt := exec.Command("wasm-opt", "-Oz", "--strip-debug", "-o", tmp, absOutFile); opt.Run() == nil {
+		if opt := exec.Command(wasmOpt, "-Oz", "--strip-debug", "-o", tmp, absOutFile); opt.Run() == nil {
 			os.Rename(tmp, absOutFile)
 		} else {
 			os.Remove(tmp)
+		}
+	} else {
+		if warnOnce != nil {
+			warnOnce.Do(func() {
+				wasmWarnf("wasm-opt not found; skipping manual optimization pass. Install Binaryen for smaller binaries.")
+			})
 		}
 	}
 

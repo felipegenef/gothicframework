@@ -8,17 +8,19 @@ import (
 )
 
 const tinyGoVersion = "0.41.1"
+const binaryenVersion = "117"
 
 // WasmHelper manages the TinyGo toolchain and compiles WASM pages.
 // It follows the same struct + method pattern as TailwindHelper and FileBasedRouteHelper.
 type WasmHelper struct {
-	Template       helpers.TemplateHelper
-	Runtime        string
-	Arch           string
-	Version        string
-	ConfigOverride string
-	cache          *wasmCache
-	astLoader      *astx.Loader
+	Template        helpers.TemplateHelper
+	Runtime         string
+	Arch            string
+	Version         string
+	BinaryenVersion string
+	ConfigOverride  string
+	cache           *wasmCache
+	astLoader       *astx.Loader
 }
 
 // WasmCompression is the compression algorithm for compiled WASM output.
@@ -66,10 +68,11 @@ type WasmPage struct {
 
 func NewWasmHelper(goos, goarch string) WasmHelper {
 	return WasmHelper{
-		Template: helpers.NewTemplateHelper(),
-		Runtime:  goos,
-		Arch:     goarch,
-		Version:  tinyGoVersion,
+		Template:        helpers.NewTemplateHelper(),
+		Runtime:         goos,
+		Arch:            goarch,
+		Version:         tinyGoVersion,
+		BinaryenVersion: binaryenVersion,
 	}
 }
 

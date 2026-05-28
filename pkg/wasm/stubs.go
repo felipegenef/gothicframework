@@ -242,14 +242,24 @@ const (
 	BROTLI Compression = iota
 )
 
+// WasmCompiler selects the WASM build toolchain for a topic.
+type WasmCompiler int
+
+const (
+	GothicTinyGo WasmCompiler = iota // default: embedded TinyGo binary
+	LocalTinyGo                      // system tinygo binary in PATH
+	Golang                           // GOOS=js GOARCH=wasm standard Go compiler
+)
+
 // TopicConfig holds per-topic configuration. The CLI AST scanner reads the
 // Name and Compression fields from CreateTopic call sites to drive code
 // generation.
 type TopicConfig struct {
 	Name             string
-	Compression      Compression // GZIP (default) or BROTLI
-	SubscriberFnName string      // overrides generated accessor func name (default: <StructName>Topic)
-	ComponentFnName  string      // overrides generated mount component func name (default: Add<StructName>Topic)
+	Compression      Compression  // GZIP (default) or BROTLI
+	Compiler         WasmCompiler // GothicTinyGo (default), LocalTinyGo, or Golang
+	SubscriberFnName string       // overrides generated accessor func name (default: <StructName>Topic)
+	ComponentFnName  string       // overrides generated mount component func name (default: Add<StructName>Topic)
 }
 
 // CreateTopic declares a topic. The CLI AST scanner detects this call and
