@@ -204,6 +204,22 @@ func CreateWasmFunc(name string, fn func())            {}
 func CreateWasmStringFunc(name string, fn func(string)) {}
 func CreateWasmBoolFunc(name string, fn func(bool))    {}
 
+// CreateWasmFuncWithReturn registers a named global JS function that can return a value back to JS.
+// Wraps syscall/js.FuncOf. Use when a JS library expects a callback that returns a value
+// synchronously (e.g. option objects, formatters, renderers). The function persists for the
+// lifetime of the page. Returns a JSValue so it can be passed directly to JS object properties.
+//
+// Example:
+//
+//	// Register a callback and pass it as a property on a JS config object:
+//	cb := CreateWasmFuncWithReturn("myCallback", func(this JSValue, args []JSValue) any {
+//	    return args[0].String() + "_suffix"
+//	})
+//	config.Set("formatter", cb)
+func CreateWasmFuncWithReturn(name string, fn func(this JSValue, args []JSValue) any) JSValue {
+	return JSValue{}
+}
+
 // ── Topic infrastructure (generated code only — not part of the user API) ────
 
 // TopicKey is a typed key used by the auto-generated topic system.

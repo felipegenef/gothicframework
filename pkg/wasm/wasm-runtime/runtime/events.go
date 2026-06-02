@@ -205,3 +205,21 @@ func CreateWasmBoolFunc(name string, fn func(bool)) {
 		})
 	})
 }
+
+// CreateWasmFuncWithReturn registers a named global JS function that can return a value back to JS.
+// Wraps syscall/js.FuncOf. The returned JSValue holds the js.Func so it can be passed
+// directly to JS object properties (chart configs, map renderers, etc.) that require a
+// synchronous return value. The js.Func is retained in keep and never released — it must
+// stay alive for the lifetime of the page; releasing it would panic on the next invocation.
+func CreateWasmFuncWithReturn(name string, fn func(this JSValue, args []JSValue) any) JSValue {
+	f := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		jsArgs := make([]JSValue, len(args))
+		for i, a := range args {
+			jsArgs[i] = JSValue{a}
+		}
+		return toJSVal(fn(JSValue{this}, jsArgs))
+	})
+	keep = append(keep, f)
+	js.Global().Set(name, f)
+	return JSValue{f.Value}
+}
