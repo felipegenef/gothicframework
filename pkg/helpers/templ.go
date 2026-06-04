@@ -12,6 +12,16 @@ import (
 type TemplHelper struct {
 }
 
+// generate is the seam used to invoke the templ generator. It defaults to the
+// real templ generatecmd entrypoint; tests replace it to exercise the dirty-file
+// and fallback paths without shelling out to the templ toolchain. The args slice
+// matches templgen.Run's: e.g. []string{"generate"} or
+// []string{"generate", "-f", file}. The default below preserves the exact
+// previous behavior (same context, stdout/stderr, and argument forwarding).
+var generate = func(args []string) error {
+	return templgen.Run(context.Background(), os.Stdout, os.Stderr, args)
+}
+
 func NewTemplHelper() TemplHelper {
 	return TemplHelper{}
 }
@@ -32,7 +42,7 @@ func (t *TemplHelper) Render() error {
 	files, err := templcache.ScanTemplFiles(".")
 	if err != nil {
 		// Cache is best-effort — fall back to a full run rather than failing.
-		return templgen.Run(context.Background(), os.Stdout, os.Stderr, []string{"generate"})
+		return generate([]string{"generate"})
 	}
 
 	dirty := templcache.DirtyFiles(cache, files)
@@ -44,7 +54,7 @@ func (t *TemplHelper) Render() error {
 	if perFileErr := generatePerFile(dirty); perFileErr != nil {
 		// Fallback: regenerate everything. We still refresh the cache afterwards
 		// so subsequent runs benefit from the optimization.
-		if err := templgen.Run(context.Background(), os.Stdout, os.Stderr, []string{"generate"}); err != nil {
+		if err := generate([]string{"generate"}); err != nil {
 			return fmt.Errorf("templ generate (fallback after per-file error %v): %w", perFileErr, err)
 		}
 	}
@@ -64,7 +74,7 @@ func (t *TemplHelper) Render() error {
 // back to a full-project generation.
 func generatePerFile(dirty []string) error {
 	for _, f := range dirty {
-		if err := templgen.Run(context.Background(), os.Stdout, os.Stderr, []string{"generate", "-f", f}); err != nil {
+		if err := generate([]string{"generate", "-f", f}); err != nil {
 			return fmt.Errorf("templ generate %s: %w", f, err)
 		}
 	}

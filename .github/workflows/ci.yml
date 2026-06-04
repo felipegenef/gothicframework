@@ -21,8 +21,10 @@ jobs:
 
       - name: Run tests
         run: |
-          go test ./cmd/... ./pkg/cli/... ./pkg/helpers/proxy/... ./pkg/helpers/routes/... \
-            -json -coverprofile=coverage.out -covermode=atomic \
+          PKGS=$(find . -name '*.go' -not -path './pkg/data/*' -not -path './.git/*' -not -path '*/testdata/*' \
+            | xargs -n1 dirname | sort -u \
+            | sed 's|^\./|github.com/felipegenef/gothicframework/v2/|; s|^\.$|github.com/felipegenef/gothicframework/v2|')
+          GOWORK=off go test $PKGS -json -coverprofile=coverage.out -covermode=atomic -timeout 20s \
             2>&1 | tee /tmp/gotest.log | gotestfmt
 
       - name: Upload coverage to Codecov

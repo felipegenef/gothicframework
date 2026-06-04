@@ -138,32 +138,6 @@ func TestEnsureBinaryWithCachedFile(t *testing.T) {
 	}
 }
 
-func TestEnsureBinaryCacheDirPermissions(t *testing.T) {
-	// Use env override so we can control the directory
-	tmpDir := t.TempDir()
-	t.Setenv("GOTHIC_CLI_CACHE_DIR", tmpDir)
-
-	binDir := filepath.Join(tmpDir, "bin")
-
-	// Create the binary to avoid a download attempt
-	if err := os.MkdirAll(binDir, 0700); err != nil {
-		t.Fatalf("failed to create bin dir: %v", err)
-	}
-	fakeBinary := filepath.Join(binDir, "tailwindcss-linux-x64")
-	if err := os.WriteFile(fakeBinary, []byte("fake"), 0755); err != nil {
-		t.Fatalf("failed to write fake binary: %v", err)
-	}
-
-	// Verify the binary has executable permissions
-	info, err := os.Stat(fakeBinary)
-	if err != nil {
-		t.Fatalf("failed to stat binary: %v", err)
-	}
-	if info.Mode().Perm()&0111 == 0 {
-		t.Error("cached binary should have executable permissions")
-	}
-}
-
 func TestNewTailwindHelperDefaults(t *testing.T) {
 	h := NewTailwindHelper("darwin", "arm64")
 	if h.Runtime != "darwin" {

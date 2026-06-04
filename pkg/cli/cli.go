@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,24 @@ import (
 	routes      "github.com/felipegenef/gothicframework/v2/pkg/helpers/routes"
 	wasmhelper  "github.com/felipegenef/gothicframework/v2/pkg/helpers/wasm"
 )
+
+// commandRunner is the DI seam that lets tests intercept Go-toolchain
+// invocations made by InitializeModule without shelling out for real.
+type commandRunner interface {
+	Run(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+type execRunner struct{}
+
+func (r execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stderr = os.Stderr
+	return cmd.CombinedOutput()
+}
+
+// cliRunner is overridable in tests to avoid invoking the real Go toolchain.
+var cliRunner commandRunner = execRunner{}
 
 type GothicCli struct {
 	config  *Config
@@ -102,26 +121,18 @@ func (cli *GothicCli) GetConfig() (Config, error) {
 }
 
 func (cli *GothicCli) InitializeModule(goModuleName string, frameworkVersion string) error {
-	initCmd := exec.Command("go", "mod", "init", goModuleName)
-	initCmd.Stdin = os.Stdin
-	initCmd.Stderr = os.Stderr
-	if err := initCmd.Run(); err != nil {
+	ctx := context.Background()
+	if _, err := cliRunner.Run(ctx, "go", "mod", "init", goModuleName); err != nil {
 		return fmt.Errorf("error running go mod init: %w", err)
 	}
 	// Pin the exact gothicframework version before go mod tidy so new projects
 	// use the same version as the CLI that scaffolded them.
 	if frameworkVersion != "" {
-		pinCmd := exec.Command("go", "get", "github.com/felipegenef/gothicframework/v2@"+frameworkVersion)
-		pinCmd.Stdin = os.Stdin
-		pinCmd.Stderr = os.Stderr
-		if err := pinCmd.Run(); err != nil {
+		if _, err := cliRunner.Run(ctx, "go", "get", "github.com/felipegenef/gothicframework/v2@"+frameworkVersion); err != nil {
 			return fmt.Errorf("error pinning gothicframework version: %w", err)
 		}
 	}
-	tidyCmd := exec.Command("go", "mod", "tidy")
-	tidyCmd.Stdin = os.Stdin
-	tidyCmd.Stderr = os.Stderr
-	if err := tidyCmd.Run(); err != nil {
+	if _, err := cliRunner.Run(ctx, "go", "mod", "tidy"); err != nil {
 		return fmt.Errorf("error running go mod tidy: %w", err)
 	}
 	return nil

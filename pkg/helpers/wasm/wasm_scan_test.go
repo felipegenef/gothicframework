@@ -91,34 +91,42 @@ func TestNormalizeWasmHttpPath_WindowsBackslashes(t *testing.T) {
 	}
 }
 
-// TestScanFile_CommentNotMatched verifies that a Go comment containing the
-// literal "ClientSideState: func() {" is NOT picked up by the AST scanner.
-// The regex-based scanner would have matched this; the AST-based scanner
-// correctly looks only at composite-literal keys with the right type.
+// TestScanFile_CommentNotMatched verifies that the *production* scanner
+// (ScanPages → scanFile → astx.ExtractClientSideStateBody) does NOT pick up a
+// "ClientSideState: func() {" occurrence that appears only inside Go comments.
+//
+// A regex-based scanner would match the comment text; the AST-based scanner
+// correctly looks only at composite-literal keys on a routes.RouteConfig. This
+// test drives the real production code path against a temp project so it would
+// fail if that scanner regressed — unlike a test that re-walks the AST itself.
 func TestScanFile_CommentNotMatched(t *testing.T) {
-	src := `package x
+	withTempCwd(t)
+	writeProjectFile(t, "go.mod", "module example.com/cmt\n\ngo 1.21\n")
+	writeProjectFile(t, "helpers/routes/routes.go", `package routes
+
+type RouteConfig struct {
+	ClientSideState func()
+	WasmCompression string
+	WasmCompiler    string
+}
+`)
+	// A *_templ.go page that mentions ClientSideState ONLY inside comments.
+	// There is no routes.RouteConfig composite literal, so the production
+	// scanner must extract nothing.
+	writeProjectFile(t, "src/pages/comment_templ.go", `package pages
 
 // Example: ClientSideState: func() { panic("nope") }
-// Another reference: ClientSideState: notARealFunc
+// Another reference: var x = routes.RouteConfig{ClientSideState: notARealFunc}
 
 var X = 42
-`
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "x.go", src, parser.ParseComments)
+`)
+
+	h := DefaultWasmHelper()
+	pages, err := h.ScanPages("src/pages", "")
 	if err != nil {
-		t.Fatalf("ParseFile: %v", err)
+		t.Fatalf("ScanPages: %v", err)
 	}
-	// Scan AST for any KeyValueExpr with key "ClientSideState".
-	var found bool
-	ast.Inspect(f, func(n ast.Node) bool {
-		if kv, ok := n.(*ast.KeyValueExpr); ok {
-			if id, ok := kv.Key.(*ast.Ident); ok && id.Name == "ClientSideState" {
-				found = true
-			}
-		}
-		return true
-	})
-	if found {
-		t.Fatalf("AST should not see ClientSideState references inside comments")
+	if len(pages) != 0 {
+		t.Fatalf("production scanner extracted %d page(s) from comment-only ClientSideState; expected 0: %+v", len(pages), pages)
 	}
 }

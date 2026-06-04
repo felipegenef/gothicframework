@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,31 @@ func TestValidateBucketName(t *testing.T) {
 			name:    "valid minimum length",
 			bucket:  "abc",
 			wantErr: false,
+		},
+		{
+			name:    "ends with hyphen",
+			bucket:  "my-bucket-",
+			wantErr: true,
+		},
+		{
+			name:    "ends with dot",
+			bucket:  "my.bucket.",
+			wantErr: true,
+		},
+		{
+			name:    "valid max length 63",
+			bucket:  "a" + strings.Repeat("b", 61) + "c",
+			wantErr: false,
+		},
+		{
+			name:    "too long 64",
+			bucket:  "a" + strings.Repeat("b", 62) + "c",
+			wantErr: true,
+		},
+		{
+			name:    "single char too short",
+			bucket:  "a",
+			wantErr: true,
 		},
 	}
 

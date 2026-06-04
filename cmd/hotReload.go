@@ -46,6 +46,13 @@ type HotReloadCommand struct {
 	excludeRegex      regexp.Regexp
 	debounceTimer     *time.Timer
 	debounceMu        sync.Mutex
+
+	// Injectable seams for tests. Defaults set in newHotReloadCommandCli are
+	// exactly equivalent to the previous inline behavior, so production paths
+	// are unchanged.
+	openBrowserFn func(url string) error            // default: defaultOpenBrowser
+	sleeper       func(d time.Duration)             // default: time.Sleep
+	proxyRunner   func(target *url.URL) error       // default: cli.Proxy.RunProxy("localhost", 3000, target)
 }
 
 func newHotReloadCommandCli(cli *gothic_cli.GothicCli) HotReloadCommand {
@@ -59,6 +66,10 @@ func newHotReloadCommandCli(cli *gothic_cli.GothicCli) HotReloadCommand {
 		excludedDirs:      []string{"assets", "tmp", "vendor", "public", "routes"},
 		watchedExtensions: []string{".go", ".tpl", ".tmpl", ".templ", ".html"},
 		excludeRegex:      *regexp.MustCompile(`.*_templ\.go$|.*_gen\.go$`),
+		// Seam fields are left nil here and resolved to their production
+		// defaults at the call site (see HotReload). This avoids binding a
+		// method value to the about-to-be-copied struct, and keeps the default
+		// behavior byte-for-byte identical to the pre-seam code.
 	}
 }
 
@@ -71,6 +82,20 @@ func newHotReloadCommand(cli gothic_cli.GothicCli) RunEFunc {
 }
 
 func (command *HotReloadCommand) HotReload() error {
+	// Resolve injectable seams to their production defaults when unset. Binding
+	// the method value here (pointer receiver) is safe and equivalent to the
+	// original inline calls.
+	if command.openBrowserFn == nil {
+		command.openBrowserFn = command.defaultOpenBrowser
+	}
+	if command.sleeper == nil {
+		command.sleeper = time.Sleep
+	}
+	if command.proxyRunner == nil {
+		command.proxyRunner = func(target *url.URL) error {
+			return command.cli.Proxy.RunProxy("localhost", 3000, target)
+		}
+	}
 	godotenv.Load()
 	// Load config to pick up binary overrides if present
 	command.cli.GetConfig()
@@ -93,12 +118,12 @@ func (command *HotReloadCommand) HotReload() error {
 	}
 	go command.watchTailwindChanges()
 	// Wait for tailwind process to render css for the first time
-	time.Sleep(4 * time.Second)
+	command.sleeper(4 * time.Second)
 	go command.watchForChanges()
 
 	proxyErrCh := make(chan error, 1)
 	go func() {
-		proxyErrCh <- command.cli.Proxy.RunProxy("localhost", 3000, targetURL)
+		proxyErrCh <- command.proxyRunner(targetURL)
 	}()
 
 	banner := `
@@ -114,7 +139,7 @@ func (command *HotReloadCommand) HotReload() error {
 🔥  Mode: HOT RELOAD ENABLED
 `
 	fmt.Println(banner)
-	command.openBrowser("http://127.0.0.1:3000")
+	command.openBrowserFn("http://127.0.0.1:3000")
 
 	if err := <-proxyErrCh; err != nil {
 		return fmt.Errorf("proxy server error: %w", err)
@@ -165,26 +190,35 @@ func (command *HotReloadCommand) watchForChanges() {
 			if !ok {
 				return
 			}
-			if command.shouldHandle(event.Name, event.Op) {
-				command.scheduleRebuild()
-			}
-			// Dynamically watch new directories
-			if event.Op&fsnotify.Create == fsnotify.Create {
-				info, err := os.Stat(event.Name)
-				if err == nil && info.IsDir() && !command.isExcludedDir(event.Name) {
-					err := watcher.Add(event.Name)
-					if err == nil {
-						log.Printf("New directory added to watcher: %s", event.Name)
-					} else {
-						log.Printf("Failed to add new directory to watcher: %s, error: %v", event.Name, err)
-					}
-				}
-			}
+			command.handleWatchEvent(watcher, event)
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return
 			}
 			log.Println("Watcher error:", err)
+		}
+	}
+}
+
+// handleWatchEvent processes a single fsnotify event: it schedules a rebuild
+// when the changed path is relevant and dynamically adds newly created
+// directories to the watcher. Extracted from watchForChanges' select loop so
+// the per-event logic is unit-testable without a running watcher; the
+// production loop calls this unchanged.
+func (command *HotReloadCommand) handleWatchEvent(watcher *fsnotify.Watcher, event fsnotify.Event) {
+	if command.shouldHandle(event.Name, event.Op) {
+		command.scheduleRebuild()
+	}
+	// Dynamically watch new directories
+	if event.Op&fsnotify.Create == fsnotify.Create {
+		info, err := os.Stat(event.Name)
+		if err == nil && info.IsDir() && !command.isExcludedDir(event.Name) {
+			err := watcher.Add(event.Name)
+			if err == nil {
+				log.Printf("New directory added to watcher: %s", event.Name)
+			} else {
+				log.Printf("Failed to add new directory to watcher: %s, error: %v", event.Name, err)
+			}
 		}
 	}
 }
@@ -343,7 +377,7 @@ func (command *HotReloadCommand) buildWasmAll() {
 	}
 }
 
-func (command *HotReloadCommand) openBrowser(url string) error {
+func (command *HotReloadCommand) defaultOpenBrowser(url string) error {
 	var cmd *exec.Cmd
 
 	switch command.cli.Runtime {

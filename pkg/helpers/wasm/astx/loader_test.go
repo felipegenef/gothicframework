@@ -1,13 +1,24 @@
 package astx
 
 import (
+	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-const astxDir = "/home/felipe/DEV/gothic-cli/pkg/helpers/wasm/astx"
+// astxDir returns this package's directory, derived at runtime so the tests
+// work in a fresh clone, on CI, or on any machine — never hardcoded.
+func astxDir(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	return filepath.Dir(thisFile)
+}
 
 func TestNewLoader_LoadsSelf(t *testing.T) {
-	l, err := NewLoader(astxDir)
+	l, err := NewLoader(astxDir(t))
 	if err != nil {
 		t.Fatalf("NewLoader: %v", err)
 	}
@@ -29,7 +40,7 @@ func TestNewLoader_LoadsSelf(t *testing.T) {
 }
 
 func TestLoader_Get_NotFound(t *testing.T) {
-	l, err := NewLoader(astxDir)
+	l, err := NewLoader(astxDir(t))
 	if err != nil {
 		t.Fatalf("NewLoader: %v", err)
 	}

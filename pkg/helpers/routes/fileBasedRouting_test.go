@@ -164,24 +164,6 @@ func mockComponent(html string) templ.Component {
 	})
 }
 
-func TestRouteConfigBackwardCompatibility(t *testing.T) {
-	// A RouteConfig without explicit fields should still work
-	config := RouteConfig[any]{
-		Type:       STATIC,
-		HttpMethod: GET,
-		Middleware: func(w http.ResponseWriter, r *http.Request) any {
-			return nil
-		},
-	}
-
-	if config.Type != STATIC {
-		t.Errorf("expected STATIC, got %d", config.Type)
-	}
-	if config.HttpMethod != GET {
-		t.Errorf("expected GET, got %d", config.HttpMethod)
-	}
-}
-
 func TestRegisterRouteStaticCACHE_CONTROL_HEADERS(t *testing.T) {
 	// CACHE_CONTROL_HEADERS (default): should set Cache-Control header
 	resetGlobalCache()

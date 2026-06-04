@@ -39,13 +39,26 @@ func init() {
 type InitCommand struct {
 	gothicCliData cli_data.GothicCliData
 	cli           *gothci_cli.GothicCli
+
+	// gitRunner is an injectable seam for tests; the default runs the real
+	// `git` command exactly as the previous inline code did.
+	gitRunner func(args ...string) error
 }
 
 func NewInitCommandCli(cli *gothci_cli.GothicCli, gothicCliData cli_data.GothicCliData) InitCommand {
-	return InitCommand{
+	command := InitCommand{
 		cli:           cli,
 		gothicCliData: gothicCliData,
 	}
+	command.gitRunner = defaultGitRunner
+	return command
+}
+
+// defaultGitRunner runs `git <args...>`, mirroring the original
+// exec.Command("git", "init").Run() behavior (errors are ignored by the
+// caller, just as before).
+func defaultGitRunner(args ...string) error {
+	return exec.Command("git", args...).Run()
 }
 
 func newInitCommand(cli gothci_cli.GothicCli) RunEFunc {
@@ -88,8 +101,11 @@ func (command *InitCommand) CreateNewGothicApp(data cli_data.GothicCliData) erro
 		return err
 	}
 
-	gitinit := exec.Command("git", "init")
-	gitinit.Run()
+	gitRunner := command.gitRunner
+	if gitRunner == nil {
+		gitRunner = defaultGitRunner
+	}
+	gitRunner("init")
 	fmt.Println("Project initialized successfully!")
 	return nil
 }

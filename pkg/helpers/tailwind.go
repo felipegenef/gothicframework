@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,11 @@ type TailwindHelper struct {
 	Version        string // default "v3.4.14"
 	ConfigOverride string // from gothic-config.json tailwindBinary field
 }
+
+// downloadBaseURL is the base URL for Tailwind standalone CLI release assets.
+// It is a package var (not a const) so tests can point it at an httptest server
+// to exercise the cache-miss download path without hitting GitHub.
+var downloadBaseURL = "https://github.com/tailwindlabs/tailwindcss/releases/download"
 
 func NewTailwindHelper(goos, goarch string) TailwindHelper {
 	return TailwindHelper{
@@ -52,7 +58,7 @@ func (h *TailwindHelper) EnsureBinary() (string, error) {
 		return cachedPath, nil
 	}
 
-	url := fmt.Sprintf("https://github.com/tailwindlabs/tailwindcss/releases/download/%s/%s", h.Version, name)
+	url := fmt.Sprintf("%s/%s/%s", downloadBaseURL, h.Version, name)
 	fmt.Printf("Downloading Tailwind CSS %s for %s/%s...\n", h.Version, h.Runtime, h.Arch)
 
 	// Create cache directory with 0700 per XDG Base Directory Spec
@@ -75,12 +81,7 @@ func (h *TailwindHelper) Build() error {
 		return fmt.Errorf("error resolving tailwind binary: %w", err)
 	}
 
-	cmd := exec.Command(bin, "-i", "src/css/app.css", "-o", "public/styles.css", "--minify")
-	cmd.Stdout = os.Stdout
-	cmd.Stdin = os.Stdin
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	if _, err := runner.Run(context.Background(), bin, "-i", "src/css/app.css", "-o", "public/styles.css", "--minify"); err != nil {
 		return fmt.Errorf("error generating tailwind css: %w", err)
 	}
 	return nil
