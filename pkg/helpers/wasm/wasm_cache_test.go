@@ -294,6 +294,96 @@ func TestPageInputHash_LocalPackageDirsOrderIndependent(t *testing.T) {
 	}
 }
 
+// TestFeedRuntimeFS_ContributesEmbeddedBytes documents the second major cache
+// invalidation trigger: upgrading the CLI itself. The runtime sources are baked
+// into the binary via wasmruntime.RuntimeFS (an embed.FS package var), so they
+// are not injectable as a parameter — they change only when the CLI is rebuilt
+// from changed sources. We therefore cannot swap the embedded bytes from a test
+// without modifying production code. The strongest hermetic guarantee we can
+// give is that feedRuntimeFS actually feeds non-empty, content-bearing bytes
+// into the hash: if it ever silently fed nothing (e.g. a broken embed path),
+// changing the CLI's runtime would NOT invalidate the cache and stale WASMs
+// would ship. This test fails loudly in that scenario.
+func TestFeedRuntimeFS_ContributesEmbeddedBytes(t *testing.T) {
+	h := DefaultWasmHelper()
+	var buf bytes.Buffer
+	h.feedRuntimeFS(&buf)
+	if buf.Len() == 0 {
+		t.Fatal("feedRuntimeFS wrote no bytes; embedded runtime is not part of the hash, so a CLI upgrade would not invalidate the cache")
+	}
+	// The embedded runtime must include a recognizable runtime source path,
+	// proving real content (not just an empty walk) flows into the hash.
+	if !bytes.Contains(buf.Bytes(), []byte("wasm-runtime/runtime")) {
+		t.Errorf("feedRuntimeFS output missing runtime source paths; got %d bytes without the expected path marker", buf.Len())
+	}
+}
+
+// TestFeedEmbeddedTemplate_ContributesEmbeddedBytes documents that the embedded
+// page/manager templates are part of the cache hash. Like the runtime FS, these
+// live in WasmTemplateFS (an embed.FS package var) and change only on CLI
+// rebuild, so they are not injectable from a test. We verify the helper feeds
+// the real template bytes and that distinct templates produce distinct bytes —
+// guaranteeing that a CLI upgrade which alters a template invalidates the cache.
+func TestFeedEmbeddedTemplate_ContributesEmbeddedBytes(t *testing.T) {
+	h := DefaultWasmHelper()
+
+	var page bytes.Buffer
+	h.feedEmbeddedTemplate(&page, tmplWasmPageMain)
+	if page.Len() == 0 {
+		t.Fatal("feedEmbeddedTemplate wrote no bytes for the page template; a CLI template change would not invalidate the cache")
+	}
+
+	var manager bytes.Buffer
+	h.feedEmbeddedTemplate(&manager, tmplTopicManagerMain)
+	if manager.Len() == 0 {
+		t.Fatal("feedEmbeddedTemplate wrote no bytes for the manager template")
+	}
+
+	if bytes.Equal(page.Bytes(), manager.Bytes()) {
+		t.Error("expected distinct page and manager template bytes to be fed into the hash; identical bytes mean template identity is invisible to the cache")
+	}
+}
+
+// TestPageInputHash_EmbeddedInputsAreLoadBearing proves end-to-end that the
+// embedded runtime FS and embedded page template are actually wired into the
+// page hash. We compute the real hash, then recompute a hash that omits exactly
+// those two embedded inputs; if the embedded inputs contributed nothing, the two
+// hashes would be equal. A divergence proves the embedded bytes are load-bearing
+// — i.e. a CLI upgrade that changes them flips the page hash and forces rebuild.
+func TestPageInputHash_EmbeddedInputsAreLoadBearing(t *testing.T) {
+	dir := withTempCwd(t)
+	srcPath := filepath.Join(dir, "page.go")
+	if err := os.WriteFile(srcPath, []byte("package x\nvar A = 1\n"), 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	h := DefaultWasmHelper()
+	page := WasmPage{SourceFile: srcPath, Compression: WasmCompressionGzip}
+
+	real := h.pageInputHash(page)
+
+	// Reconstruct the hash WITHOUT the embedded template and runtime FS inputs,
+	// mirroring pageInputHash's input ordering otherwise.
+	hh := sha256.New()
+	if data, err := os.ReadFile(page.SourceFile); err == nil {
+		hh.Write(data)
+	}
+	for _, src := range page.UsedDeclSources {
+		hh.Write([]byte(src))
+		hh.Write([]byte{0})
+	}
+	for _, d := range page.LocalPackageDirs {
+		h.feedHandwrittenPackageFiles(hh, d, "")
+	}
+	// (deliberately skip feedEmbeddedTemplate + feedRuntimeFS)
+	hh.Write([]byte{byte(page.Compression)})
+	hh.Write([]byte{byte(page.Compiler)})
+	without := hex.EncodeToString(hh.Sum(nil))
+
+	if real == without {
+		t.Error("page hash is identical with and without embedded template/runtime inputs; embedded CLI bytes are NOT part of the cache key, so a CLI upgrade would not invalidate the cache")
+	}
+}
+
 func sortStrings(s []string) {
 	for i := 1; i < len(s); i++ {
 		for j := i; j > 0 && s[j-1] > s[j]; j-- {

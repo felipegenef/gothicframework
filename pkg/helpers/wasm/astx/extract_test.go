@@ -3,11 +3,21 @@ package astx
 import (
 	"go/ast"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-const testdataRoot = "/home/felipe/DEV/gothic-cli/pkg/helpers/wasm/astx/testdata"
+// testdataRoot returns the absolute path to this package's testdata directory,
+// derived at runtime so the tests are not tied to one developer's machine.
+func testdataRoot(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	return filepath.Join(filepath.Dir(thisFile), "testdata")
+}
 
 // findClientSideStateBody walks the file's AST and returns the *ast.BlockStmt
 // value of any KeyValueExpr whose key is "ClientSideState". Supports inline
@@ -53,7 +63,7 @@ func findClientSideStateBody(t *testing.T, entry Entry) *ast.BlockStmt {
 
 func loadTestdata(t *testing.T, sub string) Entry {
 	t.Helper()
-	dir := filepath.Join(testdataRoot, sub)
+	dir := filepath.Join(testdataRoot(t), sub)
 	l, err := NewLoader(dir)
 	if err != nil {
 		t.Fatalf("NewLoader(%s): %v", sub, err)

@@ -262,16 +262,3 @@ func TestTopicDispatchAPISurface(t *testing.T) {
 	ListenTopicEventField("k", "F", func(string) {})
 	ListenTopicSetReqField("k", "F", func(string) {})
 }
-
-func TestPayloadBufStubSignatures(t *testing.T) {
-	// Compile-time check that all exported topic functions exist
-	// in the stub build (this file builds under !js tag).
-	var _ = ListenTopicEvent
-	var _ = ListenTopicSetReq
-	var _ = ListenTopicOnline
-	var _ = ListenTopicPing
-	var _ = BroadcastTopicEncoded
-	var _ = RequestTopicSet
-	var _ = PingTopicManager
-	var _ = BroadcastTopicOnline
-}

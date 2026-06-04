@@ -1,10 +1,9 @@
 package helpers
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -32,24 +31,22 @@ func (helper *AwsHelper) AddCloudFrontAssets(originBucketName string, region str
 
 	bucketPublicFolderName := "s3://" + originBucketName + "/public"
 
+	ctx := context.Background()
+
 	// Delete existing S3 public folder contents so no stale files remain after deploy.
-	removeFilesCmd := exec.Command("aws", "s3", "rm", bucketPublicFolderName, "--recursive", "--region", region, "--profile", awsProfile)
-	removeFilesCmd.Stdout = os.Stdout
-	removeFilesCmd.Stdin = os.Stdin
-	removeFilesCmd.Stderr = os.Stderr
-	if err := removeFilesCmd.Run(); err != nil {
+	if out, err := runner.Run(ctx, "aws", "s3", "rm", bucketPublicFolderName, "--recursive", "--region", region, "--profile", awsProfile); err != nil {
 		fmt.Printf("Error clearing S3 public folder before upload: %v", err)
 		return err
+	} else {
+		os.Stdout.Write(out)
 	}
 	fmt.Println("S3 public folder cleared.")
 
-	addFilesCmd := exec.Command("aws", "s3", "cp", "public", bucketPublicFolderName, "--recursive", "--region", region, "--profile", awsProfile)
-	addFilesCmd.Stdout = os.Stdout
-	addFilesCmd.Stdin = os.Stdin
-	addFilesCmd.Stderr = os.Stderr
-	if err := addFilesCmd.Run(); err != nil {
+	if out, err := runner.Run(ctx, "aws", "s3", "cp", "public", bucketPublicFolderName, "--recursive", "--region", region, "--profile", awsProfile); err != nil {
 		fmt.Printf("Error adding CloudFront assets: %v", err)
 		return err
+	} else {
+		os.Stdout.Write(out)
 	}
 	fmt.Println("S3 Files added successfully.")
 
@@ -64,7 +61,7 @@ func (helper *AwsHelper) AddCloudFrontAssets(originBucketName string, region str
 			if !helper.hasWasmFiles("public/wasm", enc.glob) {
 				continue
 			}
-			wasmCmd := exec.Command("aws", "s3", "cp", "public/wasm",
+			if out, err := runner.Run(ctx, "aws", "s3", "cp", "public/wasm",
 				bucketPublicFolderName+"/wasm",
 				"--recursive",
 				"--exclude", "*",
@@ -72,13 +69,11 @@ func (helper *AwsHelper) AddCloudFrontAssets(originBucketName string, region str
 				"--content-encoding", enc.encoding,
 				"--content-type", "application/wasm",
 				"--metadata-directive", "REPLACE",
-				"--region", region, "--profile", awsProfile)
-			wasmCmd.Stdout = os.Stdout
-			wasmCmd.Stdin = os.Stdin
-			wasmCmd.Stderr = os.Stderr
-			if err := wasmCmd.Run(); err != nil {
+				"--region", region, "--profile", awsProfile); err != nil {
 				fmt.Printf("Error uploading %s WASM assets: %v\n", enc.encoding, err)
 				return err
+			} else {
+				os.Stdout.Write(out)
 			}
 		}
 		fmt.Println("S3 WASM files uploaded with correct headers.")
@@ -91,17 +86,12 @@ func (helper *AwsHelper) RemoveCloudFrontAssets(originBucketName string, region 
 	// Construct the S3 bucket name
 	bucketPublicFolderName := "s3://" + originBucketName + "/public"
 
-	removeFilesCmd := exec.Command("aws", "s3", "rm", bucketPublicFolderName, "--recursive", "--region", region, "--profile", awsProfile)
-	removeFilesCmd.Stdout = os.Stdout
-	removeFilesCmd.Stdin = os.Stdin
-	removeFilesCmd.Stderr = os.Stderr
-
-	// Run the command
-	err := removeFilesCmd.Run()
+	out, err := runner.Run(context.Background(), "aws", "s3", "rm", bucketPublicFolderName, "--recursive", "--region", region, "--profile", awsProfile)
 	if err != nil {
 		fmt.Printf("Error removing CloudFront Assets: %v", err)
 		return err
 	}
+	os.Stdout.Write(out)
 	fmt.Println("S3 Files deleted successfully.")
 
 	return nil
@@ -109,31 +99,24 @@ func (helper *AwsHelper) RemoveCloudFrontAssets(originBucketName string, region 
 
 func (helper *AwsHelper) CleanCloudFrontCache(stackName string, stage string, region string, awsProfile string) error {
 
-	// Execute the command to get the CloudFront distribution ID
-	getDistributionIdCMD := exec.Command("aws", "cloudformation", "describe-stacks", "--stack-name", stackName+"-"+stage, "--query", "Stacks[0].Outputs[?OutputKey=='CloudFrontId'].OutputValue", "--output", "text", "--region", region, "--profile", awsProfile)
+	ctx := context.Background()
 
-	// Capture the output of the command
-	var out bytes.Buffer
-	getDistributionIdCMD.Stdout = &out
-	err := getDistributionIdCMD.Run()
+	// Execute the command to get the CloudFront distribution ID
+	out, err := runner.Run(ctx, "aws", "cloudformation", "describe-stacks", "--stack-name", stackName+"-"+stage, "--query", "Stacks[0].Outputs[?OutputKey=='CloudFrontId'].OutputValue", "--output", "text", "--region", region, "--profile", awsProfile)
 	if err != nil {
 		fmt.Printf("Error getting CloudFront Id: %v", err)
 		return err
 	}
 
 	// The result of the command will be the CloudFront distribution ID
-	distributionId := strings.TrimSpace(out.String()) // Remove any extra spaces
+	distributionId := strings.TrimSpace(string(out)) // Remove any extra spaces
 	if distributionId == "" {
 		fmt.Printf("CloudFront ID not found")
 		return fmt.Errorf("CloudFront ID not found")
 	}
 
 	// Now, use the distribution ID in the command to create the invalidation
-	cleanCachesCmd := exec.Command("aws", "cloudfront", "create-invalidation", "--distribution-id", distributionId, "--paths", "/*", "--region", region, "--profile", awsProfile)
-
-	// Execute the cache cleanup command
-	cleanCacheErr := cleanCachesCmd.Run()
-
+	_, cleanCacheErr := runner.Run(ctx, "aws", "cloudfront", "create-invalidation", "--distribution-id", distributionId, "--paths", "/*", "--region", region, "--profile", awsProfile)
 	if cleanCacheErr != nil {
 		fmt.Printf("Error cleaning up deploy files: %v", cleanCacheErr)
 		return cleanCacheErr

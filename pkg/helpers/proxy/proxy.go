@@ -74,11 +74,10 @@ func NewsseHandler() *sseHandler {
 	}
 }
 
-// RunProxy configures and starts the proxy server with bind, port, and target
-func (proxy *ProxyHelper) RunProxy(bind string, port int, target *url.URL) error {
-	proxy.Target = target
-	proxy.URL = fmt.Sprintf("http://%s:%d", bind, port)
-
+// buildProxy configures the underlying reverse proxy (transport with retries and
+// response modification) for the given target. Split out from RunProxy so the
+// proxy can be wired up without binding a listener (e.g. in tests).
+func (proxy *ProxyHelper) buildProxy(target *url.URL) {
 	p := httputil.NewSingleHostReverseProxy(target)
 	p.ErrorLog = log.New(os.Stderr, "Proxy error: ", 0)
 	p.Transport = &roundTripper{
@@ -87,8 +86,16 @@ func (proxy *ProxyHelper) RunProxy(bind string, port int, target *url.URL) error
 		backoffExponent: 1.5,
 	}
 
+	proxy.Target = target
 	proxy.p = p
 	proxy.p.ModifyResponse = proxy.modifyResponse
+}
+
+// RunProxy configures and starts the proxy server with bind, port, and target
+func (proxy *ProxyHelper) RunProxy(bind string, port int, target *url.URL) error {
+	proxy.URL = fmt.Sprintf("http://%s:%d", bind, port)
+
+	proxy.buildProxy(target)
 
 	log.Printf("Starting proxy at %s -> %s\n", proxy.URL, target)
 

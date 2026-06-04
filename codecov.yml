@@ -1,0 +1,19 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 1%
+    patch:
+      default:
+        target: 80%
+        threshold: 0%
+
+ignore:
+  - "pkg/data/**/*"
+  - "**/*_templ.go"
+  - "**/*_gen.go"
+  - "main.go"
+  - "cmd/root.go"
+  - "cmd/testdata/**/*"
+  - "pkg/wasm/internal/parity/**/*"
