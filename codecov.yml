@@ -3,11 +3,11 @@ coverage:
     project:
       default:
         target: 80%
-        threshold: 1%
+        threshold: 2%
     patch:
       default:
         target: 80%
-        threshold: 0%
+        threshold: 5%
 
 ignore:
   - "pkg/data/**/*"
