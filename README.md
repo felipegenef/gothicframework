@@ -1,69 +1,63 @@
-<img alt="background doc" src="Doc/Assets/gothic-hero.png" width="100%"/>
+<img alt="Gothic Framework" src="Doc/Assets/gothic-hero.png" width="100%"/>
 
-[![CI](https://github.com/felipegenef/gothicframework/actions/workflows/ci.yml/badge.svg)](https://github.com/felipegenef/gothicframework/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/felipegenef/gothicframework/branch/main/graph/badge.svg)](https://codecov.io/gh/felipegenef/gothicframework)
+# Gothic Framework has moved 🚚
 
-<!-- <p align="center">
-  <img alt="logo" src="Doc/Assets/gothic-g-no-bg.png" width="100"/>
-</p>
+> [!IMPORTANT]
+> ## ⚠️ Active development moved to [github.com/gothicframework](https://github.com/gothicframework)
+>
+> This repository (`felipegenef/gothicframework`) holds the **v1 / v2** history and is **no longer actively developed**. Gothic **v3** was rewritten and split into focused modules under a new organization, and the CLI was renamed **`gothicframework` → `gothic`**.
 
-<h1 align="center">Gothic Framework</h1> -->
-
-## 🚀 Build Modern Web Apps with Ease
-
-**Gothic Framework** is a developer-first toolset built to help you craft fast, scalable, and modern web applications using the **GOTTH stack**:  
-**Golang**, **TailwindCSS**, **Templ**, and **HTMX**.
-
-Inspired by frameworks like **Next.js**, Gothic Framework brings powerful full-stack features to Go developers — including edge-ready architecture, SEO enhancements, and a fantastic development experience (DX).
-
-[![See our docs](https://img.shields.io/badge/See_our_docs-ec4899?style=for-the-badge)](https://gothicframework.com)
+**Gothic Framework** is a developer-first toolset for building fast, scalable, modern web apps in Go with the **GOTTH stack** — **Go**, **TailwindCSS**, **Templ**, and **HTMX**.
 
 ---
 
-## 🧠 Why Gothic?
+## Where everything lives now (v3)
 
-Gothic Framework was built to make **Go-based web development** simpler, faster, and more productive without sacrificing performance or modern UX standards.
+| Module | Repo | What it is |
+|---|---|---|
+| **CLI** | [`gothicframework/cli`](https://github.com/gothicframework/cli) | The `gothic` command (scaffold, dev, build, deploy) |
+| **Core** | [`gothicframework/core`](https://github.com/gothicframework/core) | Runtime library: file-based routing, caching/ISR, WASM runtime, assets |
+| **Components** | [`gothicframework/components`](https://github.com/gothicframework/components) | Reusable Templ components (`RuntimeScripts`, `Styles`, `OptimizedImage`, …) |
+| **Middlewares** | [`gothicframework/middlewares`](https://github.com/gothicframework/middlewares) | The single chi middleware that wires the whole runtime |
 
-Whether you're launching a SaaS, building internal tools, or prototyping something new — Gothic Framework has your back.
+### Install the v3 CLI
 
----
+```bash
+go install github.com/gothicframework/cli/v3/cmd/gothic@latest
+gothic init github.com/you/my-app
+```
 
-## ⚙️ Effortless Deployment, Powerful Infrastructure
-
-Gothic Framework comes with built-in AWS SAM integration, making deployment to the cloud **as simple as a single command**. Focus on your app’s features and logic — not on cloud setup or DevOps headaches.
-
-<!-- <img alt="infrastructure" src="Doc/Assets/Infrastructure.jpeg" width="100%"/> -->
-
----
-
-## 🔥 Features Inspired by Next.js
-
-### 🖼️ SEO-Optimized Image Loading  
-Like the Next.js Image component, Gothic Framework lazy-loads images for better performance and user experience. A low-res placeholder is swapped with the full image after load — smooth and fast.
-
-### 🌐 Static CDN Caching  
-Static pages can be cached at **CloudFront edge locations** for blazing-fast performance — with cache TTLs of up to **1 year**!
-
-### ♻️ Incremental Static Regeneration (ISR)  
-Rebuild only the parts of your app that change. Gothic Framework lets you specify revalidation intervals — from seconds to **a full year**.
-
-### 🙅‍♀️ Custom 404 Pages  
-Craft personalized 404 pages to guide users gracefully when something goes missing.
-
-### ⚡ Link Prefetching  
-Just like in Next.js, Gothic Framework prefetches pages on **mouseover** so they load instantly on click. That’s snappy navigation!
-
-### 🔁 Hot Reloading  
-Make a change, save, and see it live instantly. No rebuilds. No restarts. Just code.
-
-### 📡 API Routes with JSON  
-Define backend logic with ease. Gothic Framework supports API routes for JSON payloads out of the box — perfect for building APIs alongside your frontend pages.
-
-### 🧩 File-Based Routing  
-Drop your components into `/pages`, `/components`, or `/api` — and Gothic automatically maps them to routes. Simple and intuitive.
+The libraries version independently of the CLI — you never add them by hand. `gothic init` scaffolds a project that imports them at the right versions.
 
 ---
 
-## 🧪 Try Gothic Today
+## Already on v2? Migrate in one command
 
-Take your Go projects to the next level with a framework that speaks your language and supports modern best practices.
+From your existing v2 project root, using this (final) v2 CLI:
+
+```bash
+gothicframework migrate-v3
+```
+
+That command installs the new `gothic` CLI, runs the migration for you, and then hands you over to the new command name. Equivalently, if you already installed the v3 CLI:
+
+```bash
+go install github.com/gothicframework/cli/v3/cmd/gothic@latest
+gothic migrate-v3          # add --dry-run to preview
+```
+
+After migrating, use **`gothic`** instead of **`gothicframework`**:
+
+| Before (v2) | After (v3) |
+|---|---|
+| `gothicframework dev` | `gothic dev` |
+| `gothicframework build` | `gothic build` |
+| `gothicframework deploy` | `gothic deploy` |
+
+See the **[v3 CLI repo](https://github.com/gothicframework/cli)** for the full list of breaking changes and new features (OpenTofu-based deploys, Go-based config, the rearchitected WASM runtime, and more).
+
+---
+
+## v1 / v2 reference
+
+The last v2 release (**v2.18.0**) is this repository at its final state: the full v2 toolchain **plus** the `migrate-v3` bridge above. Older tags remain available for historical reference. For anything new, start with the [v3 CLI](https://github.com/gothicframework/cli).
