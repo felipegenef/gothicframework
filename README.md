@@ -1,5 +1,3 @@
-<img alt="Gothic Framework" src="Doc/Assets/gothic-hero.png" width="100%"/>
-
 # Gothic Framework has moved 🚚
 
 > [!IMPORTANT]
